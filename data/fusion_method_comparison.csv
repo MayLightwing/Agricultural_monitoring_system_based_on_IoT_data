@@ -1,4 +1,4 @@
-method,samples,risk_class_accuracy,binary_risk_accuracy,uncertainty_detection_rate,conflict_detection_rate,anomaly_detection_rate,safe_hold_rate_on_uncertain_risk
-rule_fusion,1000,0.977,0.980,0.000,0.000,1.000,0.076
-fixed_weighted_fusion,1000,0.966,0.968,1.000,1.000,1.000,1.000
-uncertainty_weighted_fusion,1000,0.948,0.953,1.000,1.000,1.000,1.000
+method,samples,risk_class_accuracy,binary_risk_accuracy,risk_detection_recall,risk_miss_rate,avg_decision_latency_hours,worst_decision_latency_hours,risk_event_miss_rate,safety_false_trigger_rate,degraded_binary_risk_accuracy,degraded_uncertainty_detection_rate,degraded_safe_response_rate,modality_degradation_robustness,degraded_accuracy_retention,uncertainty_detection_rate,conflict_detection_rate,anomaly_detection_rate,safe_hold_rate_on_uncertain_risk
+rule_fusion,1000,0.977,0.980,0.989,0.011,0.00,0.00,0.093,0.000,0.972,0.000,0.076,0.349,0.972,0.000,0.000,1.000,0.076
+fixed_weighted_fusion,1000,0.966,0.968,0.969,0.031,0.03,1.00,0.278,0.000,0.972,1.000,1.000,0.991,0.972,1.000,1.000,1.000,1.000
+uncertainty_weighted_fusion,1000,0.948,0.953,0.944,0.056,0.22,2.00,0.333,0.000,0.972,1.000,1.000,0.991,0.972,1.000,1.000,1.000,1.000

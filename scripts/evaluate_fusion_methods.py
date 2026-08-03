@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -250,6 +251,81 @@ def rate(numerator: int, denominator: int) -> float:
     return numerator / denominator
 
 
+def is_reference_risk(prediction: MethodPrediction) -> bool:
+    return prediction.reference_label != "healthy"
+
+
+def is_predicted_risk(prediction: MethodPrediction) -> bool:
+    return prediction.predicted_label != "healthy" or prediction.risk_score >= 40
+
+
+def is_risk_response(prediction: MethodPrediction) -> bool:
+    return is_predicted_risk(prediction) or prediction.action_permission in {"execute", "hold"}
+
+
+def is_clean_stable_sample(prediction: MethodPrediction) -> bool:
+    return prediction.reference_label == "healthy" and not prediction.expected_uncertainty
+
+
+def is_modality_degraded_sample(prediction: MethodPrediction) -> bool:
+    return prediction.expected_uncertainty
+
+
+def binary_risk_match(prediction: MethodPrediction) -> bool:
+    return is_predicted_risk(prediction) == is_reference_risk(prediction)
+
+
+def parse_timestamp(timestamp: str) -> datetime:
+    return datetime.strptime(timestamp, "%Y-%m-%d %H:%M")
+
+
+def split_reference_risk_events(
+    predictions: list[MethodPrediction],
+) -> list[list[MethodPrediction]]:
+    events: list[list[MethodPrediction]] = []
+    current_event: list[MethodPrediction] = []
+
+    for prediction in predictions:
+        if is_reference_risk(prediction):
+            current_event.append(prediction)
+            continue
+        if current_event:
+            events.append(current_event)
+            current_event = []
+
+    if current_event:
+        events.append(current_event)
+
+    return events
+
+
+def decision_latency_metrics(predictions: list[MethodPrediction]) -> tuple[float, float, float]:
+    events = split_reference_risk_events(predictions)
+    if not events:
+        return 0.0, 0.0, 0.0
+
+    latencies: list[float] = []
+    missed_events = 0
+    for event in events:
+        first_response = next(
+            (prediction for prediction in event if is_risk_response(prediction)),
+            None,
+        )
+        if first_response is None:
+            missed_events += 1
+            continue
+
+        event_start = parse_timestamp(event[0].timestamp)
+        response_time = parse_timestamp(first_response.timestamp)
+        latency_hours = (response_time - event_start).total_seconds() / 3600
+        latencies.append(latency_hours)
+
+    avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
+    worst_latency = max(latencies) if latencies else 0.0
+    event_miss_rate = missed_events / len(events)
+    return avg_latency, worst_latency, event_miss_rate
+
+
 def build_summary_rows(predictions: Iterable[MethodPrediction]) -> list[dict[str, str]]:
     predictions_by_method: dict[str, list[MethodPrediction]] = {}
     for prediction in predictions:
@@ -263,9 +339,28 @@ def build_summary_rows(predictions: Iterable[MethodPrediction]) -> list[dict[str
             for prediction in method_predictions
         )
         binary_matches = sum(
-            (prediction.predicted_label != "healthy") == (prediction.reference_label != "healthy")
-            for prediction in method_predictions
+            binary_risk_match(prediction) for prediction in method_predictions
         )
+        true_risk_cases = [
+            prediction for prediction in method_predictions if is_reference_risk(prediction)
+        ]
+        clean_stable_cases = [
+            prediction for prediction in method_predictions if is_clean_stable_sample(prediction)
+        ]
+        degraded_cases = [
+            prediction for prediction in method_predictions if is_modality_degraded_sample(prediction)
+        ]
+        clean_binary_matches = sum(
+            binary_risk_match(prediction) for prediction in clean_stable_cases
+        )
+        degraded_binary_matches = sum(
+            binary_risk_match(prediction) for prediction in degraded_cases
+        )
+        degraded_risk_cases = [
+            prediction
+            for prediction in degraded_cases
+            if is_reference_risk(prediction) or prediction.risk_score >= 40
+        ]
         uncertainty_cases = [
             prediction for prediction in method_predictions if prediction.expected_uncertainty
         ]
@@ -280,6 +375,44 @@ def build_summary_rows(predictions: Iterable[MethodPrediction]) -> list[dict[str
             for prediction in method_predictions
             if prediction.expected_uncertainty and prediction.risk_score >= 40
         ]
+        avg_latency, worst_latency, risk_event_miss_rate = decision_latency_metrics(
+            method_predictions
+        )
+        clean_binary_accuracy = rate(clean_binary_matches, len(clean_stable_cases))
+        degraded_binary_accuracy = rate(degraded_binary_matches, len(degraded_cases))
+        degraded_uncertainty_detection = rate(
+            sum(prediction.uncertainty_detected for prediction in degraded_cases),
+            len(degraded_cases),
+        )
+        degraded_safe_response = rate(
+            sum(prediction.action_permission != "execute" for prediction in degraded_risk_cases),
+            len(degraded_risk_cases),
+        )
+        modality_degradation_robustness = (
+            degraded_binary_accuracy
+            + degraded_uncertainty_detection
+            + degraded_safe_response
+        ) / 3
+        degraded_accuracy_retention = (
+            degraded_binary_accuracy / clean_binary_accuracy
+            if clean_binary_accuracy > 0
+            else 0.0
+        )
+        risk_detection_recall = rate(
+            sum(is_predicted_risk(prediction) for prediction in true_risk_cases),
+            len(true_risk_cases),
+        )
+        risk_miss_rate = rate(
+            sum(not is_predicted_risk(prediction) for prediction in true_risk_cases),
+            len(true_risk_cases),
+        )
+        safety_false_triggers = sum(
+            prediction.action_permission != "observe"
+            or prediction.safety_action != "routine_patrol"
+            or is_predicted_risk(prediction)
+            for prediction in clean_stable_cases
+        )
+        safety_false_trigger_rate = rate(safety_false_triggers, len(clean_stable_cases))
 
         rows.append(
             {
@@ -287,6 +420,17 @@ def build_summary_rows(predictions: Iterable[MethodPrediction]) -> list[dict[str
                 "samples": str(total),
                 "risk_class_accuracy": f"{rate(exact_matches, total):.3f}",
                 "binary_risk_accuracy": f"{rate(binary_matches, total):.3f}",
+                "risk_detection_recall": f"{risk_detection_recall:.3f}",
+                "risk_miss_rate": f"{risk_miss_rate:.3f}",
+                "avg_decision_latency_hours": f"{avg_latency:.2f}",
+                "worst_decision_latency_hours": f"{worst_latency:.2f}",
+                "risk_event_miss_rate": f"{risk_event_miss_rate:.3f}",
+                "safety_false_trigger_rate": f"{safety_false_trigger_rate:.3f}",
+                "degraded_binary_risk_accuracy": f"{degraded_binary_accuracy:.3f}",
+                "degraded_uncertainty_detection_rate": f"{degraded_uncertainty_detection:.3f}",
+                "degraded_safe_response_rate": f"{degraded_safe_response:.3f}",
+                "modality_degradation_robustness": f"{modality_degradation_robustness:.3f}",
+                "degraded_accuracy_retention": f"{degraded_accuracy_retention:.3f}",
                 "uncertainty_detection_rate": f"{rate(sum(p.uncertainty_detected for p in uncertainty_cases), len(uncertainty_cases)):.3f}",
                 "conflict_detection_rate": f"{rate(sum(p.conflict_detected for p in conflict_cases), len(conflict_cases)):.3f}",
                 "anomaly_detection_rate": f"{rate(sum(p.anomaly_detected for p in anomaly_cases), len(anomaly_cases)):.3f}",
@@ -351,6 +495,17 @@ def write_summary(rows: list[dict[str, str]]) -> None:
                 "samples",
                 "risk_class_accuracy",
                 "binary_risk_accuracy",
+                "risk_detection_recall",
+                "risk_miss_rate",
+                "avg_decision_latency_hours",
+                "worst_decision_latency_hours",
+                "risk_event_miss_rate",
+                "safety_false_trigger_rate",
+                "degraded_binary_risk_accuracy",
+                "degraded_uncertainty_detection_rate",
+                "degraded_safe_response_rate",
+                "modality_degradation_robustness",
+                "degraded_accuracy_retention",
                 "uncertainty_detection_rate",
                 "conflict_detection_rate",
                 "anomaly_detection_rate",
@@ -382,6 +537,10 @@ def main() -> None:
         print(
             row["method"],
             "risk_class_accuracy=" + row["risk_class_accuracy"],
+            "risk_miss_rate=" + row["risk_miss_rate"],
+            "avg_decision_latency_hours=" + row["avg_decision_latency_hours"],
+            "safety_false_trigger_rate=" + row["safety_false_trigger_rate"],
+            "modality_degradation_robustness=" + row["modality_degradation_robustness"],
             "uncertainty_detection_rate=" + row["uncertainty_detection_rate"],
             "safe_hold_rate_on_uncertain_risk=" + row["safe_hold_rate_on_uncertain_risk"],
         )

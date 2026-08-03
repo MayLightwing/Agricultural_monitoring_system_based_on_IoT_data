@@ -1,0 +1,4 @@
+method,samples,risk_class_accuracy,binary_risk_accuracy,uncertainty_detection_rate,conflict_detection_rate,anomaly_detection_rate,safe_hold_rate_on_uncertain_risk
+rule_fusion,1000,0.977,0.980,0.000,0.000,1.000,0.076
+fixed_weighted_fusion,1000,0.966,0.968,1.000,1.000,1.000,1.000
+uncertainty_weighted_fusion,1000,0.935,0.947,1.000,1.000,1.000,1.000

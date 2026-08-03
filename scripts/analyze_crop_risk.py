@@ -42,7 +42,82 @@ RISK_SEVERITY = {
     "sensor_anomaly": 60,
 }
 TREND_WINDOW_SIZE = 6
-EMA_ALPHA = 0.42
+OBSERVATION_LIKELIHOOD_FLOOR = 0.015
+OBSERVATION_LIKELIHOOD_POWER = 1.25
+INITIAL_STATE_PRIOR = {
+    "healthy": 0.70,
+    "drought": 0.08,
+    "heat": 0.05,
+    "pest": 0.05,
+    "waterlogging": 0.05,
+    "low_light": 0.04,
+    "sensor_anomaly": 0.03,
+}
+HMM_TRANSITION_MODEL = {
+    "healthy": {
+        "healthy": 0.88,
+        "drought": 0.04,
+        "heat": 0.025,
+        "pest": 0.02,
+        "waterlogging": 0.02,
+        "low_light": 0.01,
+        "sensor_anomaly": 0.005,
+    },
+    "drought": {
+        "healthy": 0.12,
+        "drought": 0.78,
+        "heat": 0.04,
+        "pest": 0.015,
+        "waterlogging": 0.015,
+        "low_light": 0.01,
+        "sensor_anomaly": 0.02,
+    },
+    "heat": {
+        "healthy": 0.16,
+        "drought": 0.07,
+        "heat": 0.70,
+        "pest": 0.02,
+        "waterlogging": 0.01,
+        "low_light": 0.01,
+        "sensor_anomaly": 0.03,
+    },
+    "pest": {
+        "healthy": 0.08,
+        "drought": 0.025,
+        "heat": 0.025,
+        "pest": 0.82,
+        "waterlogging": 0.02,
+        "low_light": 0.01,
+        "sensor_anomaly": 0.02,
+    },
+    "waterlogging": {
+        "healthy": 0.12,
+        "drought": 0.015,
+        "heat": 0.015,
+        "pest": 0.03,
+        "waterlogging": 0.76,
+        "low_light": 0.01,
+        "sensor_anomaly": 0.05,
+    },
+    "low_light": {
+        "healthy": 0.30,
+        "drought": 0.02,
+        "heat": 0.02,
+        "pest": 0.02,
+        "waterlogging": 0.02,
+        "low_light": 0.60,
+        "sensor_anomaly": 0.02,
+    },
+    "sensor_anomaly": {
+        "healthy": 0.35,
+        "drought": 0.05,
+        "heat": 0.05,
+        "pest": 0.03,
+        "waterlogging": 0.04,
+        "low_light": 0.03,
+        "sensor_anomaly": 0.45,
+    },
+}
 
 ProbabilityDistribution = dict[str, float]
 
@@ -101,10 +176,14 @@ class RiskAssessment:
     vision_reliability: float
     dynamic_sensor_weight: float
     dynamic_vision_weight: float
+    observation_reliability: float
     reliability_adjustments: tuple[str, ...]
     sensor_probabilities: ProbabilityDistribution
     vision_probabilities: ProbabilityDistribution
     fused_probabilities: ProbabilityDistribution
+    hmm_prior_probabilities: ProbabilityDistribution
+    observation_likelihoods: ProbabilityDistribution
+    hmm_posterior_probabilities: ProbabilityDistribution
     smoothed_probabilities: ProbabilityDistribution
     trend_flags: tuple[str, ...]
     consistency_flags: tuple[str, ...]
@@ -480,18 +559,81 @@ def apply_temporal_evidence(
     return normalize_distribution(adjusted)
 
 
-def smooth_probabilities(
-    current: ProbabilityDistribution,
-    previous: ProbabilityDistribution | None,
+def predict_hmm_prior(
+    previous_belief: ProbabilityDistribution | None,
 ) -> ProbabilityDistribution:
-    if previous is None:
-        return current
+    if previous_belief is None:
+        return normalize_distribution(INITIAL_STATE_PRIOR)
 
-    smoothed = {
-        state: EMA_ALPHA * current[state] + (1 - EMA_ALPHA) * previous[state]
+    prior = {
+        current_state: sum(
+            previous_belief[previous_state]
+            * HMM_TRANSITION_MODEL[previous_state][current_state]
+            for previous_state in STATE_LABELS
+        )
+        for current_state in STATE_LABELS
+    }
+    return normalize_distribution(prior)
+
+
+def compute_observation_likelihoods(
+    observation_probabilities: ProbabilityDistribution,
+    observation_reliability: float,
+) -> ProbabilityDistribution:
+    peaked_likelihoods = normalize_distribution({
+        state: (observation_probabilities[state] + OBSERVATION_LIKELIHOOD_FLOOR)
+        ** OBSERVATION_LIKELIHOOD_POWER
+        for state in STATE_LABELS
+    })
+    uniform_probability = 1 / len(STATE_LABELS)
+    softened_likelihoods = {
+        state: observation_reliability * peaked_likelihoods[state]
+        + (1 - observation_reliability) * uniform_probability
         for state in STATE_LABELS
     }
-    return normalize_distribution(smoothed)
+    return normalize_distribution(softened_likelihoods)
+
+
+def update_hmm_posterior(
+    prior: ProbabilityDistribution,
+    observation_likelihoods: ProbabilityDistribution,
+) -> ProbabilityDistribution:
+    posterior = {
+        state: prior[state] * observation_likelihoods[state]
+        for state in STATE_LABELS
+    }
+    return normalize_distribution(posterior)
+
+
+def bayesian_filter_update(
+    observation_probabilities: ProbabilityDistribution,
+    previous_belief: ProbabilityDistribution | None,
+    observation_reliability: float,
+) -> tuple[ProbabilityDistribution, ProbabilityDistribution, ProbabilityDistribution]:
+    prior = predict_hmm_prior(previous_belief)
+    likelihoods = compute_observation_likelihoods(
+        observation_probabilities,
+        observation_reliability,
+    )
+    posterior = update_hmm_posterior(prior, likelihoods)
+    return prior, likelihoods, posterior
+
+
+def compute_observation_reliability(
+    record: CleanedRecord,
+    conflicts: tuple[str, ...],
+) -> float:
+    reliability = 0.94
+    reliability -= 0.16 * len(record.missing_fields)
+    reliability -= 0.20 * len(record.anomaly_fields)
+    if record.vision_confidence < 0.5:
+        reliability -= 0.18
+    elif record.vision_confidence < 0.7:
+        reliability -= 0.08
+    if conflicts:
+        reliability -= 0.18
+
+    return clamp(reliability, 0.35, 0.96)
 
 
 def detect_consistency_flags(
@@ -526,27 +668,6 @@ def detect_consistency_flags(
     return tuple(flags)
 
 
-def apply_consistency_evidence(
-    probabilities: ProbabilityDistribution,
-    consistency_flags: tuple[str, ...],
-) -> ProbabilityDistribution:
-    if not consistency_flags:
-        return probabilities
-
-    adjusted = dict(probabilities)
-    risk_score = probability_risk_score(adjusted)
-    current_state = dominant_state(adjusted, risk_score)
-    if current_state == "healthy":
-        return probabilities
-
-    if "same_risk_state_consistent_with_previous_belief" in consistency_flags:
-        adjusted[current_state] += 0.08
-    if "temporal_trend_supports_dominant_state" in consistency_flags:
-        adjusted[current_state] += 0.06
-
-    return normalize_distribution(adjusted)
-
-
 def trend_reasons(trend_flags: tuple[str, ...]) -> tuple[str, ...]:
     reason_map = {
         "soil_moisture_decreasing_6h": "最近 6 小时土壤湿度持续下降，干旱状态概率上升",
@@ -558,8 +679,8 @@ def trend_reasons(trend_flags: tuple[str, ...]) -> tuple[str, ...]:
 
 def consistency_reasons(consistency_flags: tuple[str, ...]) -> tuple[str, ...]:
     reason_map = {
-        "same_risk_state_consistent_with_previous_belief": "当前主风险与上一时刻状态信念一致，系统置信度上升",
-        "temporal_trend_supports_dominant_state": "时间趋势支持当前主风险，系统置信度上升",
+        "same_risk_state_consistent_with_previous_belief": "HMM 转移先验支持当前主风险与上一时刻状态连续",
+        "temporal_trend_supports_dominant_state": "时间趋势支持当前主风险，HMM 后验置信度上升",
     }
     return tuple(reason_map[flag] for flag in consistency_flags)
 
@@ -699,23 +820,25 @@ def assess_record(
     fused_probabilities = fuse_probabilities(environment, vision, fusion_weights)
     trend_flags = detect_temporal_trends(temporal_window)
     temporally_adjusted = apply_temporal_evidence(fused_probabilities, trend_flags)
-    ema_probabilities = smooth_probabilities(temporally_adjusted, previous_belief)
+    observation_reliability = compute_observation_reliability(record, conflicts)
+    hmm_prior, observation_likelihoods, hmm_posterior = bayesian_filter_update(
+        observation_probabilities=temporally_adjusted,
+        previous_belief=previous_belief,
+        observation_reliability=observation_reliability,
+    )
     consistency_flags = detect_consistency_flags(
-        probabilities=ema_probabilities,
+        probabilities=hmm_posterior,
         previous_belief=previous_belief,
         trend_flags=trend_flags,
     )
-    smoothed_probabilities = apply_consistency_evidence(
-        probabilities=ema_probabilities,
-        consistency_flags=consistency_flags,
-    )
+    posterior_probabilities = hmm_posterior
 
-    risk_score = probability_risk_score(smoothed_probabilities)
+    risk_score = probability_risk_score(posterior_probabilities)
     if conflicts and max(environment.score, vision.score) >= 50:
         risk_score = max(risk_score, 45)
 
-    dominant_risk = dominant_state(smoothed_probabilities, risk_score)
-    state_confidence = smoothed_probabilities[dominant_risk]
+    dominant_risk = dominant_state(posterior_probabilities, risk_score)
+    state_confidence = posterior_probabilities[dominant_risk]
     uncertainty_score = assess_uncertainty(
         record=record,
         conflicts=conflicts,
@@ -754,11 +877,15 @@ def assess_record(
         vision_reliability=round(vision.reliability, 2),
         dynamic_sensor_weight=round(fusion_weights.sensor_weight, 2),
         dynamic_vision_weight=round(fusion_weights.vision_weight, 2),
+        observation_reliability=round(observation_reliability, 2),
         reliability_adjustments=fusion_weights.reliability_adjustments,
         sensor_probabilities=environment.probabilities,
         vision_probabilities=vision.probabilities,
         fused_probabilities=fused_probabilities,
-        smoothed_probabilities=smoothed_probabilities,
+        hmm_prior_probabilities=hmm_prior,
+        observation_likelihoods=observation_likelihoods,
+        hmm_posterior_probabilities=posterior_probabilities,
+        smoothed_probabilities=posterior_probabilities,
         trend_flags=trend_flags,
         consistency_flags=consistency_flags,
         conflict_flags=conflicts,
@@ -769,7 +896,7 @@ def assess_record(
         recommendation=recommendation,
         uncertainty_case=record.uncertainty_case,
     )
-    return assessment, smoothed_probabilities
+    return assessment, posterior_probabilities
 
 
 def read_input_rows() -> list[dict[str, str]]:
@@ -808,10 +935,14 @@ def write_results(results: list[RiskAssessment]) -> None:
                 "vision_reliability",
                 "dynamic_sensor_weight",
                 "dynamic_vision_weight",
+                "observation_reliability",
                 "reliability_adjustments",
                 "sensor_probabilities",
                 "vision_probabilities",
                 "fused_probabilities",
+                "hmm_prior_probabilities",
+                "observation_likelihoods",
+                "hmm_posterior_probabilities",
                 "smoothed_probabilities",
                 "trend_flags",
                 "consistency_flags",
@@ -846,10 +977,20 @@ def write_results(results: list[RiskAssessment]) -> None:
                     "vision_reliability": f"{result.vision_reliability:.2f}",
                     "dynamic_sensor_weight": f"{result.dynamic_sensor_weight:.2f}",
                     "dynamic_vision_weight": f"{result.dynamic_vision_weight:.2f}",
+                    "observation_reliability": f"{result.observation_reliability:.2f}",
                     "reliability_adjustments": "；".join(result.reliability_adjustments),
                     "sensor_probabilities": format_probabilities(result.sensor_probabilities),
                     "vision_probabilities": format_probabilities(result.vision_probabilities),
                     "fused_probabilities": format_probabilities(result.fused_probabilities),
+                    "hmm_prior_probabilities": format_probabilities(
+                        result.hmm_prior_probabilities
+                    ),
+                    "observation_likelihoods": format_probabilities(
+                        result.observation_likelihoods
+                    ),
+                    "hmm_posterior_probabilities": format_probabilities(
+                        result.hmm_posterior_probabilities
+                    ),
                     "smoothed_probabilities": format_probabilities(result.smoothed_probabilities),
                     "trend_flags": "；".join(result.trend_flags),
                     "consistency_flags": "；".join(result.consistency_flags),
@@ -874,11 +1015,14 @@ def print_examples(results: list[RiskAssessment]) -> None:
         print(f"- 时间：{result.timestamp}")
         print(f"  风险等级：{result.risk_level}")
         print(f"  主状态：{result.dominant_risk}，置信度：{result.state_confidence:.2f}")
+        print(f"  HMM 预测先验：{format_probabilities(result.hmm_prior_probabilities)}")
+        print(f"  观测似然：{format_probabilities(result.observation_likelihoods)}")
         print(f"  状态概率：{format_probabilities(result.smoothed_probabilities)}")
         print(
             f"  动态权重：sensor={result.dynamic_sensor_weight:.2f}, "
             f"vision={result.dynamic_vision_weight:.2f}"
         )
+        print(f"  观测可靠性：{result.observation_reliability:.2f}")
         print(f"  不确定性：{result.uncertainty_level} ({result.uncertainty_score:.1f})")
         print(f"  安全策略：{result.safety_policy}")
         print(f"  原因：{'；'.join(result.reasons)}")

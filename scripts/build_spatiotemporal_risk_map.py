@@ -31,6 +31,14 @@ REQUIRED_RISK_COLUMNS = {
     "action_permission",
     "safety_action",
     "safety_policy",
+    "robot_action_mode",
+    "action_priority",
+    "motion_command",
+    "perception_command",
+    "actuator_command",
+    "operator_notification",
+    "execution_guard",
+    "command_status",
 }
 
 
@@ -99,6 +107,14 @@ def join_observations() -> list[dict[str, str]]:
                 "action_permission": risk_row["action_permission"],
                 "safety_action": risk_row["safety_action"],
                 "safety_policy": risk_row["safety_policy"],
+                "robot_action_mode": risk_row["robot_action_mode"],
+                "action_priority": risk_row["action_priority"],
+                "motion_command": risk_row["motion_command"],
+                "perception_command": risk_row["perception_command"],
+                "actuator_command": risk_row["actuator_command"],
+                "operator_notification": risk_row["operator_notification"],
+                "execution_guard": risk_row["execution_guard"],
+                "command_status": risk_row["command_status"],
                 "uncertainty_case": mock_row["uncertainty_case"],
             }
         )
@@ -137,6 +153,7 @@ def build_region_rows(observations: list[dict[str, str]]) -> list[dict[str, str]
             score for score in uncertainty_scores if score >= 30
         ]
         action_counter = Counter(row["safety_action"] for row in ordered)
+        robot_action_counter = Counter(row["robot_action_mode"] for row in ordered)
         dominant_counter = Counter(row["dominant_risk"] for row in ordered)
 
         region_rows.append(
@@ -159,6 +176,12 @@ def build_region_rows(observations: list[dict[str, str]]) -> list[dict[str, str]
                 "latest_risk_level": latest_observation["risk_level"],
                 "latest_safety_action": latest_observation["safety_action"],
                 "most_common_safety_action": action_counter.most_common(1)[0][0],
+                "latest_robot_action_mode": latest_observation["robot_action_mode"],
+                "most_common_robot_action_mode": robot_action_counter.most_common(1)[0][0],
+                "latest_motion_command": latest_observation["motion_command"],
+                "latest_perception_command": latest_observation["perception_command"],
+                "latest_actuator_command": latest_observation["actuator_command"],
+                "latest_command_status": latest_observation["command_status"],
             }
         )
 

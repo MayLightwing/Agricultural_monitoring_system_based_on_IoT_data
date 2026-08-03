@@ -10,6 +10,7 @@ from typing import Sequence
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INPUT_PATH = PROJECT_ROOT / "data" / "mock_environment_data.csv"
 OUTPUT_PATH = PROJECT_ROOT / "data" / "risk_assessment_results.csv"
+ROBOT_ACTION_OUTPUT_PATH = PROJECT_ROOT / "data" / "robot_action_commands.csv"
 
 REQUIRED_COLUMNS = {
     "timestamp",
@@ -21,6 +22,12 @@ REQUIRED_COLUMNS = {
     "image_status",
     "vision_confidence",
     "uncertainty_case",
+    "robot_x_m",
+    "robot_y_m",
+    "robot_heading_deg",
+    "region_id",
+    "path_segment",
+    "patrol_loop",
 }
 IMAGE_STATUSES = {"healthy", "drought", "pest", "waterlogging", "unknown"}
 STATE_LABELS = (
@@ -134,6 +141,12 @@ class CleanedRecord:
     image_status: str
     vision_confidence: float
     uncertainty_case: str
+    robot_x_m: float
+    robot_y_m: float
+    robot_heading_deg: float
+    region_id: str
+    path_segment: str
+    patrol_loop: int
     missing_fields: tuple[str, ...]
     anomaly_fields: tuple[str, ...]
 
@@ -159,6 +172,21 @@ class SafetyDecision:
     action_permission: str
     safety_action: str
     safety_policy: str
+
+
+@dataclass(frozen=True)
+class RobotActionPlan:
+    action_mode: str
+    action_priority: str
+    target_region: str
+    target_x_m: float
+    target_y_m: float
+    motion_command: str
+    perception_command: str
+    actuator_command: str
+    operator_notification: str
+    execution_guard: str
+    command_status: str
 
 
 @dataclass(frozen=True)
@@ -191,6 +219,7 @@ class RiskAssessment:
     action_permission: str
     safety_action: str
     safety_policy: str
+    robot_action_plan: RobotActionPlan
     reasons: tuple[str, ...]
     recommendation: str
     uncertainty_case: str
@@ -255,12 +284,27 @@ def clean_record(row: dict[str, str]) -> CleanedRecord:
     light = parse_float(row, "light")
     rainfall = parse_float(row, "rainfall")
     vision_confidence = parse_float(row, "vision_confidence")
+    robot_x_m = parse_float(row, "robot_x_m")
+    robot_y_m = parse_float(row, "robot_y_m")
+    robot_heading_deg = parse_float(row, "robot_heading_deg")
     if vision_confidence is None or not 0 <= vision_confidence <= 1:
         raise ValueError(f"vision_confidence 必须在 0-1 之间: {row['vision_confidence']}")
+    if robot_x_m is None or robot_y_m is None or robot_heading_deg is None:
+        raise ValueError("机器人位姿字段 robot_x_m、robot_y_m 和 robot_heading_deg 不能为空")
 
     image_status = row["image_status"].strip()
     if image_status not in IMAGE_STATUSES:
         raise ValueError(f"未知 image_status: {image_status}")
+    region_id = row["region_id"].strip()
+    path_segment = row["path_segment"].strip()
+    if not region_id:
+        raise ValueError("region_id 不能为空")
+    if not path_segment:
+        raise ValueError("path_segment 不能为空")
+    try:
+        patrol_loop = int(row["patrol_loop"])
+    except ValueError as error:
+        raise ValueError(f"patrol_loop 必须是整数: {row['patrol_loop']}") from error
 
     numeric_values = {
         "temperature": temperature,
@@ -294,6 +338,12 @@ def clean_record(row: dict[str, str]) -> CleanedRecord:
         image_status=image_status,
         vision_confidence=vision_confidence,
         uncertainty_case=row["uncertainty_case"].strip(),
+        robot_x_m=robot_x_m,
+        robot_y_m=robot_y_m,
+        robot_heading_deg=robot_heading_deg,
+        region_id=region_id,
+        path_segment=path_segment,
+        patrol_loop=patrol_loop,
         missing_fields=missing_fields,
         anomaly_fields=tuple(anomaly_fields),
     )
@@ -775,11 +825,169 @@ def decide_safety_action(
     )
 
 
+def build_robot_action_plan(
+    record: CleanedRecord,
+    dominant_risk: str,
+    risk_level: str,
+    uncertainty_level: str,
+    safety_decision: SafetyDecision,
+) -> RobotActionPlan:
+    target = f"{record.region_id}@({record.robot_x_m:.1f},{record.robot_y_m:.1f})"
+
+    if safety_decision.safety_action == "recheck_before_action":
+        return RobotActionPlan(
+            action_mode="recheck_region",
+            action_priority="high",
+            target_region=record.region_id,
+            target_x_m=record.robot_x_m,
+            target_y_m=record.robot_y_m,
+            motion_command=f"navigate_to:{target}; slow_down; hold_safe_distance",
+            perception_command="capture_close_range_image; resample_environment_sensors",
+            actuator_command="defer_field_actuation",
+            operator_notification=f"{record.region_id} 高风险但不确定性为{uncertainty_level}，先复查后再执行",
+            execution_guard="blocked_until_recheck_confirms_state",
+            command_status="queued_for_recheck",
+        )
+
+    if safety_decision.safety_action == "resample_before_action":
+        return RobotActionPlan(
+            action_mode="resample_sensors",
+            action_priority="medium",
+            target_region=record.region_id,
+            target_x_m=record.robot_x_m,
+            target_y_m=record.robot_y_m,
+            motion_command=f"hold_position:{target}; repeat_sampling_pass",
+            perception_command="resample_soil_moisture; resample_temperature; capture_context_image",
+            actuator_command="none",
+            operator_notification=f"{record.region_id} 中风险且不确定性为{uncertainty_level}，重新采样后再决策",
+            execution_guard="blocked_until_sensor_resample",
+            command_status="queued_for_resampling",
+        )
+
+    if dominant_risk == "sensor_anomaly":
+        return RobotActionPlan(
+            action_mode="sensor_diagnostics",
+            action_priority="high",
+            target_region=record.region_id,
+            target_x_m=record.robot_x_m,
+            target_y_m=record.robot_y_m,
+            motion_command=f"hold_position:{target}; avoid_autonomous_actuation",
+            perception_command="run_sensor_self_check; recalibrate_suspicious_sensor",
+            actuator_command="disable_field_actuation",
+            operator_notification=f"{record.region_id} 疑似传感器异常，要求校准后再恢复动作",
+            execution_guard="blocked_by_sensor_anomaly",
+            command_status="diagnostics_required",
+        )
+
+    if dominant_risk == "waterlogging" and risk_level in {"中", "中高", "高"}:
+        return RobotActionPlan(
+            action_mode="reroute_and_drainage_check",
+            action_priority="high" if risk_level in {"中高", "高"} else "medium",
+            target_region=record.region_id,
+            target_x_m=record.robot_x_m,
+            target_y_m=record.robot_y_m,
+            motion_command=f"reroute_around_region:{record.region_id}; mark_low_traction_zone",
+            perception_command="inspect_drainage_channel; verify_soil_moisture",
+            actuator_command="send_drainage_alert",
+            operator_notification=f"{record.region_id} 疑似积水，机器人绕行并发送排水检查提醒",
+            execution_guard="execute_without_entering_risky_cell",
+            command_status="ready",
+        )
+
+    if safety_decision.action_permission == "execute":
+        if dominant_risk == "drought":
+            return RobotActionPlan(
+                action_mode="irrigation_alert",
+                action_priority="high",
+                target_region=record.region_id,
+                target_x_m=record.robot_x_m,
+                target_y_m=record.robot_y_m,
+                motion_command=f"continue_patrol_after_marking:{record.region_id}",
+                perception_command="verify_soil_moisture_next_pass",
+                actuator_command="send_irrigation_alert",
+                operator_notification=f"{record.region_id} 干旱风险可信，触发灌溉提醒",
+                execution_guard="human_or_controller_confirmation_required_for_irrigation",
+                command_status="ready",
+            )
+        if dominant_risk == "heat":
+            return RobotActionPlan(
+                action_mode="heat_stress_followup",
+                action_priority="high",
+                target_region=record.region_id,
+                target_x_m=record.robot_x_m,
+                target_y_m=record.robot_y_m,
+                motion_command=f"schedule_followup_pass:{record.region_id}",
+                perception_command="monitor_temperature_trend; capture_canopy_context",
+                actuator_command="send_heat_stress_alert",
+                operator_notification=f"{record.region_id} 高温风险可信，提醒检查遮阴或降温条件",
+                execution_guard="alert_only_no_direct_actuation",
+                command_status="ready",
+            )
+        if dominant_risk == "pest":
+            return RobotActionPlan(
+                action_mode="close_range_pest_inspection",
+                action_priority="high",
+                target_region=record.region_id,
+                target_x_m=record.robot_x_m,
+                target_y_m=record.robot_y_m,
+                motion_command=f"navigate_to:{target}; reduce_speed_for_close_inspection",
+                perception_command="capture_macro_image; mark_suspected_pest_patch",
+                actuator_command="send_pest_inspection_alert",
+                operator_notification=f"{record.region_id} 病虫害风险可信，安排近距离复核",
+                execution_guard="human_confirmation_required_before_treatment",
+                command_status="ready",
+            )
+        if dominant_risk == "low_light":
+            return RobotActionPlan(
+                action_mode="adjust_patrol_timing",
+                action_priority="normal",
+                target_region=record.region_id,
+                target_x_m=record.robot_x_m,
+                target_y_m=record.robot_y_m,
+                motion_command="continue_patrol_with_low_light_caution",
+                perception_command="increase_image_exposure; revisit_in_better_light",
+                actuator_command="none",
+                operator_notification=f"{record.region_id} 光照偏低，建议调整复查时间",
+                execution_guard="perception_quality_guard",
+                command_status="ready",
+            )
+
+    if safety_decision.safety_action == "monitor_more_context":
+        return RobotActionPlan(
+            action_mode="monitor_context",
+            action_priority="normal",
+            target_region=record.region_id,
+            target_x_m=record.robot_x_m,
+            target_y_m=record.robot_y_m,
+            motion_command=f"continue_patrol; revisit_region:{record.region_id}",
+            perception_command="collect_next_context_window",
+            actuator_command="none",
+            operator_notification=f"{record.region_id} 风险或不确定性处于中间状态，继续观察",
+            execution_guard="no_direct_field_actuation",
+            command_status="monitoring",
+        )
+
+    return RobotActionPlan(
+        action_mode="continue_patrol",
+        action_priority="low",
+        target_region=record.region_id,
+        target_x_m=record.robot_x_m,
+        target_y_m=record.robot_y_m,
+        motion_command="continue_nominal_patrol",
+        perception_command="standard_periodic_sampling",
+        actuator_command="none",
+        operator_notification=f"{record.region_id} 当前风险较低，保持常规巡检",
+        execution_guard="normal_autonomy",
+        command_status="ready",
+    )
+
+
 def build_recommendation(
     record: CleanedRecord,
     dominant_risk: str,
     risk_level: str,
     uncertainty_score: float,
+    robot_action_plan: RobotActionPlan,
 ) -> str:
     actions: list[str] = []
 
@@ -804,6 +1012,7 @@ def build_recommendation(
         actions.append("不要直接执行农业动作，先确认传感器读数")
     elif risk_level in {"很低", "低"} and not actions:
         actions.append("继续常规巡检")
+    actions.append(f"机器人动作：{robot_action_plan.action_mode}，命令状态：{robot_action_plan.command_status}")
 
     return "；".join(dict.fromkeys(actions))
 
@@ -848,6 +1057,13 @@ def assess_record(
     risk_level = score_to_level(risk_score)
     uncertainty_level = uncertainty_to_level(uncertainty_score)
     safety_decision = decide_safety_action(risk_score, uncertainty_score)
+    robot_action_plan = build_robot_action_plan(
+        record=record,
+        dominant_risk=dominant_risk,
+        risk_level=risk_level,
+        uncertainty_level=uncertainty_level,
+        safety_decision=safety_decision,
+    )
     reasons = (
         environment.reasons
         + vision.reasons
@@ -861,6 +1077,7 @@ def assess_record(
         dominant_risk=dominant_risk,
         risk_level=risk_level,
         uncertainty_score=uncertainty_score,
+        robot_action_plan=robot_action_plan,
     )
 
     assessment = RiskAssessment(
@@ -892,6 +1109,7 @@ def assess_record(
         action_permission=safety_decision.action_permission,
         safety_action=safety_decision.safety_action,
         safety_policy=safety_decision.safety_policy,
+        robot_action_plan=robot_action_plan,
         reasons=tuple(dict.fromkeys(reasons)),
         recommendation=recommendation,
         uncertainty_case=record.uncertainty_case,
@@ -950,6 +1168,17 @@ def write_results(results: list[RiskAssessment]) -> None:
                 "action_permission",
                 "safety_action",
                 "safety_policy",
+                "robot_action_mode",
+                "action_priority",
+                "target_region",
+                "target_x_m",
+                "target_y_m",
+                "motion_command",
+                "perception_command",
+                "actuator_command",
+                "operator_notification",
+                "execution_guard",
+                "command_status",
                 "reasons",
                 "recommendation",
                 "uncertainty_case",
@@ -998,6 +1227,17 @@ def write_results(results: list[RiskAssessment]) -> None:
                     "action_permission": result.action_permission,
                     "safety_action": result.safety_action,
                     "safety_policy": result.safety_policy,
+                    "robot_action_mode": result.robot_action_plan.action_mode,
+                    "action_priority": result.robot_action_plan.action_priority,
+                    "target_region": result.robot_action_plan.target_region,
+                    "target_x_m": f"{result.robot_action_plan.target_x_m:.1f}",
+                    "target_y_m": f"{result.robot_action_plan.target_y_m:.1f}",
+                    "motion_command": result.robot_action_plan.motion_command,
+                    "perception_command": result.robot_action_plan.perception_command,
+                    "actuator_command": result.robot_action_plan.actuator_command,
+                    "operator_notification": result.robot_action_plan.operator_notification,
+                    "execution_guard": result.robot_action_plan.execution_guard,
+                    "command_status": result.robot_action_plan.command_status,
                     "reasons": "；".join(result.reasons),
                     "recommendation": result.recommendation,
                     "uncertainty_case": result.uncertainty_case,
@@ -1005,8 +1245,60 @@ def write_results(results: list[RiskAssessment]) -> None:
             )
 
 
+def write_robot_action_commands(results: list[RiskAssessment]) -> None:
+    ROBOT_ACTION_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with ROBOT_ACTION_OUTPUT_PATH.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=[
+                "timestamp",
+                "target_region",
+                "target_x_m",
+                "target_y_m",
+                "risk_level",
+                "dominant_risk",
+                "uncertainty_level",
+                "action_permission",
+                "safety_action",
+                "robot_action_mode",
+                "action_priority",
+                "motion_command",
+                "perception_command",
+                "actuator_command",
+                "operator_notification",
+                "execution_guard",
+                "command_status",
+            ],
+        )
+        writer.writeheader()
+        for result in results:
+            action_plan = result.robot_action_plan
+            writer.writerow(
+                {
+                    "timestamp": result.timestamp,
+                    "target_region": action_plan.target_region,
+                    "target_x_m": f"{action_plan.target_x_m:.1f}",
+                    "target_y_m": f"{action_plan.target_y_m:.1f}",
+                    "risk_level": result.risk_level,
+                    "dominant_risk": result.dominant_risk,
+                    "uncertainty_level": result.uncertainty_level,
+                    "action_permission": result.action_permission,
+                    "safety_action": result.safety_action,
+                    "robot_action_mode": action_plan.action_mode,
+                    "action_priority": action_plan.action_priority,
+                    "motion_command": action_plan.motion_command,
+                    "perception_command": action_plan.perception_command,
+                    "actuator_command": action_plan.actuator_command,
+                    "operator_notification": action_plan.operator_notification,
+                    "execution_guard": action_plan.execution_guard,
+                    "command_status": action_plan.command_status,
+                }
+            )
+
+
 def print_examples(results: list[RiskAssessment]) -> None:
     print(f"Generated {len(results)} risk assessments at {OUTPUT_PATH}")
+    print(f"Generated {len(results)} robot action commands at {ROBOT_ACTION_OUTPUT_PATH}")
     print()
     print("不确定性测试样例：")
     for result in results:
@@ -1025,6 +1317,11 @@ def print_examples(results: list[RiskAssessment]) -> None:
         print(f"  观测可靠性：{result.observation_reliability:.2f}")
         print(f"  不确定性：{result.uncertainty_level} ({result.uncertainty_score:.1f})")
         print(f"  安全策略：{result.safety_policy}")
+        print(f"  机器人动作：{result.robot_action_plan.action_mode}")
+        print(f"  运动命令：{result.robot_action_plan.motion_command}")
+        print(f"  感知命令：{result.robot_action_plan.perception_command}")
+        print(f"  执行/提醒：{result.robot_action_plan.actuator_command}")
+        print(f"  命令状态：{result.robot_action_plan.command_status}")
         print(f"  原因：{'；'.join(result.reasons)}")
         print(f"  建议：{result.recommendation}")
 
@@ -1046,6 +1343,7 @@ def main() -> None:
         results.append(assessment)
 
     write_results(results)
+    write_robot_action_commands(results)
     print_examples(results)
 
 

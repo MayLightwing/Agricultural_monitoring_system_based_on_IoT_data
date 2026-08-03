@@ -277,6 +277,10 @@ def spatiotemporal_map_chart(
             f'<text x="{x + cell_width / 2:.1f}" y="{y + 78:.1f}" text-anchor="middle" '
             f'font-size="12" fill="{text_color}">{escape(row["peak_dominant_risk"])}</text>'
         )
+        cell_elements.append(
+            f'<text x="{x + cell_width / 2:.1f}" y="{y + 98:.1f}" text-anchor="middle" '
+            f'font-size="11" fill="{text_color}">{escape(row.get("most_common_robot_action_mode", "continue_patrol"))}</text>'
+        )
 
     path_step = max(1, len(observations) // 240)
     path_points = " ".join(
@@ -319,7 +323,7 @@ def spatiotemporal_map_chart(
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
 <rect width="100%" height="100%" fill="#ffffff" />
 <text x="{width / 2:.1f}" y="28" text-anchor="middle" font-size="22" font-weight="700" fill="#222">Spatiotemporal Risk Map</text>
-<text x="{map_left}" y="56" font-size="13" fill="#555">Cell color = average HMM risk score; labels show avg/max risk and peak dominant risk.</text>
+<text x="{map_left}" y="56" font-size="13" fill="#555">Cell color = average HMM risk score; labels show avg/max risk, peak dominant risk, and common robot action.</text>
 <rect x="{map_left}" y="{map_top}" width="{map_width}" height="{map_height}" fill="#fafafa" stroke="#9e9e9e" />
 {''.join(cell_elements)}
 <polyline fill="none" stroke="#212121" stroke-width="2.0" stroke-opacity="0.55" points="{path_points}" />

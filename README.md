@@ -22,6 +22,7 @@
 | 时空风险地图 | 将时间风险结果与机器人路径、区域网格聚合，形成区域级风险热力图 |
 | 不确定性评估 | 计算缺失、冲突、异常、低置信度和概率分布分散带来的不确定性 |
 | 安全决策层 | 根据风险等级与不确定性决定执行、复查、重新采样或常规巡检 |
+| 机器人动作接口 | 将安全策略映射为复查、绕行、重新采样、灌溉提醒等结构化机器人命令 |
 | 实验评估与可视化 | 比较不同融合方法，并生成风险曲线、概率曲线、不确定性曲线和时空风险地图 |
 
 ### 3. 算法流程
@@ -35,6 +36,7 @@
 → HMM/Bayesian filter 时间状态估计
 → 不确定性评估
 → 安全决策层
+→ 机器人动作计划
 → 输出风险等级和建议动作
 ```
 
@@ -77,7 +79,7 @@ P(waterlogging), P(low_light), P(sensor_anomaly)
 2. 接入真实 IoT 传感器或边缘设备，验证算法对真实噪声和缺失值的适应能力。
 3. 使用真实标注数据学习 HMM 转移矩阵和观测似然，替代当前人工设定参数。
 4. 将模拟位姿替换为真实机器人 GPS、SLAM 或里程计位姿，并校准空间区域边界。
-5. 将安全决策层连接到机器人动作，例如复查、绕行、重新采样、灌溉提醒等。
+5. 将 `robot_action_commands.csv` 对接 ROS/仿真器或真实机器人控制器，验证复查、绕行、重新采样和提醒动作的闭环执行。
 6. 设计更多实验指标，例如决策延迟、安全误触发率、风险漏检率和模态退化鲁棒性。
 
 ## 具体场景
@@ -263,7 +265,7 @@ belief_t(x) ∝ P(observation_t | x_t=x) × prediction_t(x)
 
 ### 8. 安全决策层
 
-系统会根据风险等级和不确定性等级决定是否允许直接执行动作：
+系统会根据风险等级和不确定性等级决定是否允许直接执行动作，并继续映射成机器人可执行的动作计划：
 
 | 条件 | 安全策略 |
 | --- | --- |
@@ -273,15 +275,35 @@ belief_t(x) ∝ P(observation_t | x_t=x) × prediction_t(x)
 | 低风险 + 低不确定性 | 常规巡检 |
 | 其他情况 | 继续观察并收集更多上下文 |
 
+安全策略不会只停留在文字建议，而是生成结构化机器人命令：
+
+| 机器人动作 | 触发场景 | 动作含义 |
+| --- | --- | --- |
+| `recheck_region` | 高风险但不确定性较高 | 导航回目标区域，减速复查，重新采集图像和环境数据 |
+| `resample_sensors` | 中风险且不确定性较高 | 原地或短距离重复采样，等待新数据后再决策 |
+| `reroute_and_drainage_check` | 积水风险较高 | 机器人绕开低通行性区域，并发送排水检查提醒 |
+| `irrigation_alert` | 干旱风险高且观测可靠 | 标记目标区域并发送灌溉提醒，但仍要求控制器或人工确认 |
+| `close_range_pest_inspection` | 病虫害风险可靠 | 低速靠近并采集近距离图像，标记疑似病虫害区域 |
+| `sensor_diagnostics` | 传感器异常 | 暂停直接农业动作，执行传感器自检或校准 |
+| `continue_patrol` | 低风险低不确定性 | 保持常规巡检和周期采样 |
+
 输出结果中会记录：
 
 - `action_permission`
 - `safety_action`
 - `safety_policy`
+- `robot_action_mode`
+- `motion_command`
+- `perception_command`
+- `actuator_command`
+- `execution_guard`
+- `command_status`
 
 ### 9. 输出风险等级和建议动作
 
-运行后会生成 `data/risk_assessment_results.csv`，核心字段包括：
+运行后会生成 `data/risk_assessment_results.csv` 和 `data/robot_action_commands.csv`。前者保存完整风险估计结果，后者保存面向机器人控制接口的动作命令。
+
+`data/risk_assessment_results.csv` 核心字段包括：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -308,8 +330,19 @@ belief_t(x) ∝ P(observation_t | x_t=x) × prediction_t(x)
 | `action_permission` | 是否允许执行动作 |
 | `safety_action` | 安全决策动作 |
 | `safety_policy` | 安全策略解释 |
+| `robot_action_mode` | 机器人动作模式，例如复查、绕行、重新采样或灌溉提醒 |
+| `action_priority` | 动作优先级 |
+| `target_region` / `target_x_m` / `target_y_m` | 机器人动作目标区域和坐标 |
+| `motion_command` | 运动层命令，例如导航到区域、绕行、继续巡检 |
+| `perception_command` | 感知层命令，例如近距离拍照、重新采样、传感器自检 |
+| `actuator_command` | 执行/提醒命令，例如发送灌溉提醒、排水提醒或禁止执行 |
+| `operator_notification` | 给操作者或上层系统的解释性通知 |
+| `execution_guard` | 动作安全约束，说明是否需要复查、人工确认或禁止直接执行 |
+| `command_status` | 命令状态，例如 ready、queued_for_recheck、queued_for_resampling |
 | `reasons` | 可解释原因 |
 | `recommendation` | 建议动作 |
+
+`data/robot_action_commands.csv` 可以视为一个简化机器人动作接口，适合后续接 ROS、机器人仿真器或真实控制器。
 
 示例输出逻辑：
 
@@ -318,7 +351,12 @@ belief_t(x) ∝ P(observation_t | x_t=x) × prediction_t(x)
 状态概率：P(healthy)=0.12；P(drought)=0.71；P(heat)=0.06；P(pest)=0.03；P(waterlogging)=0.04；P(low_light)=0.02；P(sensor_anomaly)=0.02
 不确定性：中
 原因：土壤湿度偏低；图像标签疑似干旱；最近 6 小时土壤湿度持续下降
-建议：优先让机器人复查该区域并重新采样；若低湿状态连续出现，触发灌溉提醒
+机器人动作：irrigation_alert
+运动命令：continue_patrol_after_marking:R03C04
+感知命令：verify_soil_moisture_next_pass
+执行/提醒：send_irrigation_alert
+安全约束：human_or_controller_confirmation_required_for_irrigation
+建议：若低湿状态连续出现，触发灌溉提醒
 ```
 
 ## 机器人位姿、路径与时空风险地图
@@ -347,6 +385,7 @@ python3 scripts/build_spatiotemporal_risk_map.py
 | --- | --- |
 | `data/spatial_risk_observations.csv` | 每条巡检观测对应的机器人位姿、区域、风险等级和安全动作 |
 | `data/spatiotemporal_risk_map.csv` | 每个空间区域聚合后的平均风险、最大风险、不确定性比例和主要安全动作 |
+| `data/robot_action_commands.csv` | 每个时间点对应的机器人动作计划、运动命令、感知命令和执行/提醒命令 |
 
 `data/spatiotemporal_risk_map.csv` 的核心字段包括：
 
@@ -363,6 +402,10 @@ python3 scripts/build_spatiotemporal_risk_map.py
 | `dominant_risk_mode` | 该区域最常见的主风险类型 |
 | `peak_dominant_risk` | 该区域最高风险时刻对应的主风险 |
 | `latest_safety_action` | 最近一次巡检时的安全动作 |
+| `latest_robot_action_mode` | 最近一次巡检生成的机器人动作模式 |
+| `most_common_robot_action_mode` | 该区域最常见的机器人动作模式 |
+| `latest_motion_command` | 最近一次巡检生成的运动命令 |
+| `latest_actuator_command` | 最近一次巡检生成的执行/提醒命令 |
 
 这种地图让系统不只回答“当前是否有风险”，还可以回答“哪个区域风险更高、风险是否持续出现、机器人下一步应该优先复查哪里”。这使项目从时间序列风险估计扩展为面向机器人巡检的时空风险建图。
 
@@ -402,7 +445,7 @@ python3 scripts/visualize_results.py
 
 ### 时空风险地图
 
-该图将区域平均风险热力图、机器人巡检路径和不确定性样本位置叠加展示。颜色越接近红色，表示该区域平均风险越高；黑色折线表示机器人巡检路径；黑色圆点表示人为插入的不确定性测试样本位置。
+该图将区域平均风险热力图、机器人巡检路径、不确定性样本位置和区域常见机器人动作叠加展示。颜色越接近红色，表示该区域平均风险越高；黑色折线表示机器人巡检路径；黑色圆点表示人为插入的不确定性测试样本位置。
 
 ![Spatiotemporal risk map](figures/spatiotemporal_risk_map.svg)
 

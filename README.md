@@ -15,12 +15,14 @@
 | 模块 | 作用 |
 | --- | --- |
 | 模拟数据生成 | 生成温度、湿度、土壤湿度、光照、降雨量、图像标签和视觉置信度 |
+| 机器人位姿与区域建模 | 生成机器人坐标、朝向、巡检路径段和空间区域 ID |
 | 单模态状态估计 | 分别从环境传感器和图像标签估计健康、干旱、高温、病虫害、积水、低光照、传感器异常等状态概率 |
 | 动态可靠性调整 | 根据传感器缺失、异常值、视觉置信度低和模态冲突动态调整融合权重 |
 | 时间序列状态估计 | 使用 6 小时滑动窗口和 HMM/Bayesian filter 维护连续状态信念 |
+| 时空风险地图 | 将时间风险结果与机器人路径、区域网格聚合，形成区域级风险热力图 |
 | 不确定性评估 | 计算缺失、冲突、异常、低置信度和概率分布分散带来的不确定性 |
 | 安全决策层 | 根据风险等级与不确定性决定执行、复查、重新采样或常规巡检 |
-| 实验评估与可视化 | 比较不同融合方法，并生成风险曲线、概率曲线和不确定性曲线 |
+| 实验评估与可视化 | 比较不同融合方法，并生成风险曲线、概率曲线、不确定性曲线和时空风险地图 |
 
 ### 3. 算法流程
 
@@ -74,7 +76,7 @@ P(waterlogging), P(low_light), P(sensor_anomaly)
 1. 接入真实或公开农业图像数据集，将 `image_status` 替换为真实视觉模型输出。
 2. 接入真实 IoT 传感器或边缘设备，验证算法对真实噪声和缺失值的适应能力。
 3. 使用真实标注数据学习 HMM 转移矩阵和观测似然，替代当前人工设定参数。
-4. 引入机器人位姿、路径和空间区域信息，扩展为时空风险地图。
+4. 将模拟位姿替换为真实机器人 GPS、SLAM 或里程计位姿，并校准空间区域边界。
 5. 将安全决策层连接到机器人动作，例如复查、绕行、重新采样、灌溉提醒等。
 6. 设计更多实验指标，例如决策延迟、安全误触发率、风险漏检率和模态退化鲁棒性。
 
@@ -109,6 +111,12 @@ P(waterlogging), P(low_light), P(sensor_anomaly)
 | `image_status` | 模拟图像识别结果，包含 `healthy`、`drought`、`pest`、`waterlogging`、`unknown` | 类别 |
 | `vision_confidence` | 图像识别置信度 | 0-1 |
 | `uncertainty_case` | 不确定性测试类型，正常数据为 `normal` | 类别 |
+| `robot_x_m` | 机器人在田块坐标系中的 x 坐标 | m |
+| `robot_y_m` | 机器人在田块坐标系中的 y 坐标 | m |
+| `robot_heading_deg` | 机器人朝向角，0 为北，90 为东 | 度 |
+| `region_id` | 空间区域编号，例如 `R01C03` | 类别 |
+| `path_segment` | 巡检路径段，例如 `row_1` | 类别 |
+| `patrol_loop` | 第几轮巡检循环 | 次 |
 
 ## 模拟图像标签
 
@@ -313,6 +321,51 @@ belief_t(x) ∝ P(observation_t | x_t=x) × prediction_t(x)
 建议：优先让机器人复查该区域并重新采样；若低湿状态连续出现，触发灌溉提醒
 ```
 
+## 机器人位姿、路径与时空风险地图
+
+已新增 `scripts/build_spatiotemporal_risk_map.py`，用于将机器人位姿、巡检路径和风险评估结果合成为时空风险地图。当前模拟田块大小为 `120m × 80m`，划分为 `6 × 4` 个空间区域。机器人采用类似农业巡检中的往复式路径，在每个时间点记录所在区域、坐标和朝向。
+
+完整时空处理流程如下：
+
+```text
+模拟环境数据 + 机器人位姿
+→ HMM 风险评估结果
+→ 按 timestamp 合并
+→ 按 region_id 聚合
+→ 生成区域级风险地图
+```
+
+运行时空地图构建：
+
+```bash
+python3 scripts/build_spatiotemporal_risk_map.py
+```
+
+生成文件：
+
+| 文件 | 含义 |
+| --- | --- |
+| `data/spatial_risk_observations.csv` | 每条巡检观测对应的机器人位姿、区域、风险等级和安全动作 |
+| `data/spatiotemporal_risk_map.csv` | 每个空间区域聚合后的平均风险、最大风险、不确定性比例和主要安全动作 |
+
+`data/spatiotemporal_risk_map.csv` 的核心字段包括：
+
+| 字段 | 含义 |
+| --- | --- |
+| `region_id` | 空间区域编号 |
+| `center_x_m` / `center_y_m` | 区域中心坐标 |
+| `sample_count` | 该区域被巡检采样的次数 |
+| `avg_risk_score` | 区域平均风险分数 |
+| `max_risk_score` | 区域历史最大风险分数 |
+| `risk_observation_rate` | 该区域被判为中等及以上风险的比例 |
+| `avg_uncertainty_score` | 区域平均不确定性分数 |
+| `high_uncertainty_rate` | 该区域中等及以上不确定性的比例 |
+| `dominant_risk_mode` | 该区域最常见的主风险类型 |
+| `peak_dominant_risk` | 该区域最高风险时刻对应的主风险 |
+| `latest_safety_action` | 最近一次巡检时的安全动作 |
+
+这种地图让系统不只回答“当前是否有风险”，还可以回答“哪个区域风险更高、风险是否持续出现、机器人下一步应该优先复查哪里”。这使项目从时间序列风险估计扩展为面向机器人巡检的时空风险建图。
+
 ## 结果可视化
 
 已新增 `scripts/visualize_results.py`，用于把风险评估结果和实验对比结果转换为 SVG 图表。图表输出目录为 `figures/`。
@@ -346,6 +399,12 @@ python3 scripts/visualize_results.py
 该图比较规则融合、固定权重概率融合和不确定性动态加权融合在风险识别、不确定性检测和安全阻止执行方面的表现。
 
 ![Fusion method comparison](figures/fusion_method_comparison.svg)
+
+### 时空风险地图
+
+该图将区域平均风险热力图、机器人巡检路径和不确定性样本位置叠加展示。颜色越接近红色，表示该区域平均风险越高；黑色折线表示机器人巡检路径；黑色圆点表示人为插入的不确定性测试样本位置。
+
+![Spatiotemporal risk map](figures/spatiotemporal_risk_map.svg)
 
 ## 实验评估指标
 
@@ -449,5 +508,6 @@ python3 scripts/analyze_crop_risk.py
 python3 scripts/generate_mock_environment_data.py
 python3 scripts/analyze_crop_risk.py
 python3 scripts/evaluate_fusion_methods.py
+python3 scripts/build_spatiotemporal_risk_map.py
 python3 scripts/visualize_results.py
 ```

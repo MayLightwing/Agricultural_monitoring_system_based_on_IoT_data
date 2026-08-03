@@ -8,6 +8,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RISK_RESULTS_PATH = PROJECT_ROOT / "data" / "risk_assessment_results.csv"
 COMPARISON_PATH = PROJECT_ROOT / "data" / "fusion_method_comparison.csv"
+SPATIOTEMPORAL_MAP_PATH = PROJECT_ROOT / "data" / "spatiotemporal_risk_map.csv"
+SPATIAL_OBSERVATIONS_PATH = PROJECT_ROOT / "data" / "spatial_risk_observations.csv"
 FIGURE_DIR = PROJECT_ROOT / "figures"
 
 CHART_WIDTH = 1200
@@ -207,10 +209,140 @@ def bar_chart(rows: list[dict[str, str]], output_path: Path) -> None:
     output_path.write_text(svg, encoding="utf-8")
 
 
+def risk_color(score: float) -> str:
+    if score >= 80:
+        return "#b71c1c"
+    if score >= 60:
+        return "#ef6c00"
+    if score >= 40:
+        return "#fdd835"
+    if score >= 20:
+        return "#9ccc65"
+    return "#2e7d32"
+
+
+def spatial_x(value: float, field_width: float, map_left: float, map_width: float) -> float:
+    return map_left + value / field_width * map_width
+
+
+def spatial_y(value: float, field_height: float, map_top: float, map_height: float) -> float:
+    return map_top + map_height - value / field_height * map_height
+
+
+def spatiotemporal_map_chart(
+    region_rows: list[dict[str, str]],
+    observations: list[dict[str, str]],
+    output_path: Path,
+) -> None:
+    width = 1200
+    height = 760
+    map_left = 88
+    map_top = 76
+    map_width = 920
+    map_height = 600
+    max_grid_row = max(int(row["grid_row"]) for row in region_rows)
+    max_grid_column = max(int(row["grid_column"]) for row in region_rows)
+    center_x_values = [float(row["center_x_m"]) for row in region_rows]
+    center_y_values = [float(row["center_y_m"]) for row in region_rows]
+    cell_width_m = (max(center_x_values) - min(center_x_values)) / (max_grid_column - 1)
+    cell_height_m = (max(center_y_values) - min(center_y_values)) / (max_grid_row - 1)
+    field_width = max(center_x_values) + cell_width_m / 2
+    field_height = max(center_y_values) + cell_height_m / 2
+    cell_width = map_width / max_grid_column
+    cell_height = map_height / max_grid_row
+
+    cell_elements: list[str] = []
+    for row in region_rows:
+        grid_row = int(row["grid_row"])
+        grid_column = int(row["grid_column"])
+        avg_risk = float(row["avg_risk_score"])
+        max_risk = float(row["max_risk_score"])
+        x = map_left + (grid_column - 1) * cell_width
+        y = map_top + (max_grid_row - grid_row) * cell_height
+        fill = risk_color(avg_risk)
+        text_color = "#ffffff" if avg_risk >= 60 else "#1b1b1b"
+        cell_elements.append(
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{cell_width:.1f}" '
+            f'height="{cell_height:.1f}" fill="{fill}" stroke="#ffffff" stroke-width="2" />'
+        )
+        cell_elements.append(
+            f'<text x="{x + cell_width / 2:.1f}" y="{y + 36:.1f}" text-anchor="middle" '
+            f'font-size="15" font-weight="700" fill="{text_color}">{escape(row["region_id"])}</text>'
+        )
+        cell_elements.append(
+            f'<text x="{x + cell_width / 2:.1f}" y="{y + 58:.1f}" text-anchor="middle" '
+            f'font-size="12" fill="{text_color}">avg {avg_risk:.1f} / max {max_risk:.1f}</text>'
+        )
+        cell_elements.append(
+            f'<text x="{x + cell_width / 2:.1f}" y="{y + 78:.1f}" text-anchor="middle" '
+            f'font-size="12" fill="{text_color}">{escape(row["peak_dominant_risk"])}</text>'
+        )
+
+    path_step = max(1, len(observations) // 240)
+    path_points = " ".join(
+        f'{spatial_x(float(row["robot_x_m"]), field_width, map_left, map_width):.1f},'
+        f'{spatial_y(float(row["robot_y_m"]), field_height, map_top, map_height):.1f}'
+        for row in observations[::path_step]
+    )
+    uncertainty_markers: list[str] = []
+    for row in observations:
+        if row["uncertainty_case"] == "normal":
+            continue
+        x = spatial_x(float(row["robot_x_m"]), field_width, map_left, map_width)
+        y = spatial_y(float(row["robot_y_m"]), field_height, map_top, map_height)
+        uncertainty_markers.append(
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="7" fill="#000000" stroke="#ffffff" stroke-width="2" />'
+        )
+        uncertainty_markers.append(
+            f'<text x="{x + 10:.1f}" y="{y - 8:.1f}" font-size="11" fill="#212121">{escape(row["uncertainty_case"])}</text>'
+        )
+
+    legend_x = 1035
+    legend_y = 110
+    legend_items = [
+        ("very low", 10),
+        ("low", 30),
+        ("medium", 50),
+        ("medium-high", 70),
+        ("high", 90),
+    ]
+    legend_elements = []
+    for index, (label, score) in enumerate(legend_items):
+        y = legend_y + index * 30
+        legend_elements.append(
+            f'<rect x="{legend_x}" y="{y}" width="24" height="18" fill="{risk_color(score)}" />'
+        )
+        legend_elements.append(
+            f'<text x="{legend_x + 32}" y="{y + 14}" font-size="13" fill="#333">{escape(label)}</text>'
+        )
+
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+<rect width="100%" height="100%" fill="#ffffff" />
+<text x="{width / 2:.1f}" y="28" text-anchor="middle" font-size="22" font-weight="700" fill="#222">Spatiotemporal Risk Map</text>
+<text x="{map_left}" y="56" font-size="13" fill="#555">Cell color = average HMM risk score; labels show avg/max risk and peak dominant risk.</text>
+<rect x="{map_left}" y="{map_top}" width="{map_width}" height="{map_height}" fill="#fafafa" stroke="#9e9e9e" />
+{''.join(cell_elements)}
+<polyline fill="none" stroke="#212121" stroke-width="2.0" stroke-opacity="0.55" points="{path_points}" />
+{''.join(uncertainty_markers)}
+<text x="{legend_x}" y="{legend_y - 22}" font-size="15" font-weight="700" fill="#333">Avg risk</text>
+{''.join(legend_elements)}
+<line x1="{legend_x}" y1="{legend_y + 178}" x2="{legend_x + 36}" y2="{legend_y + 178}" stroke="#212121" stroke-width="2" stroke-opacity="0.55" />
+<text x="{legend_x + 46}" y="{legend_y + 182}" font-size="13" fill="#333">robot path</text>
+<circle cx="{legend_x + 12}" cy="{legend_y + 212}" r="7" fill="#000000" stroke="#ffffff" stroke-width="2" />
+<text x="{legend_x + 46}" y="{legend_y + 216}" font-size="13" fill="#333">uncertainty case</text>
+<text x="{map_left + map_width / 2:.1f}" y="{height - 28}" text-anchor="middle" font-size="13" fill="#555">field x coordinate</text>
+<text x="24" y="{map_top + map_height / 2:.1f}" text-anchor="middle" font-size="13" fill="#555" transform="rotate(-90 24 {map_top + map_height / 2:.1f})">field y coordinate</text>
+</svg>
+"""
+    output_path.write_text(svg, encoding="utf-8")
+
+
 def main() -> None:
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
     risk_rows = read_csv(RISK_RESULTS_PATH)
     comparison_rows = read_csv(COMPARISON_PATH)
+    region_rows = read_csv(SPATIOTEMPORAL_MAP_PATH)
+    spatial_observations = read_csv(SPATIAL_OBSERVATIONS_PATH)
 
     risk_scores = [float(row["risk_score"]) for row in risk_rows]
     uncertainty_scores = [float(row["uncertainty_score"]) for row in risk_rows]
@@ -258,6 +390,11 @@ def main() -> None:
         ],
     )
     bar_chart(comparison_rows, FIGURE_DIR / "fusion_method_comparison.svg")
+    spatiotemporal_map_chart(
+        region_rows,
+        spatial_observations,
+        FIGURE_DIR / "spatiotemporal_risk_map.svg",
+    )
 
     print(f"Generated SVG figures in {FIGURE_DIR}")
 

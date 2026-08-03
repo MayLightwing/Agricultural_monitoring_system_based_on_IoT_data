@@ -11,6 +11,13 @@ OUTPUT_PATH = Path(__file__).resolve().parents[1] / "data" / "mock_environment_d
 RECORD_COUNT = 1000
 START_TIME = datetime(2026, 8, 3, 0, 0)
 RANDOM_SEED = 20260803
+FIELD_WIDTH_M = 120.0
+FIELD_HEIGHT_M = 80.0
+GRID_COLUMNS = 6
+GRID_ROWS = 4
+CELL_WIDTH_M = FIELD_WIDTH_M / GRID_COLUMNS
+CELL_HEIGHT_M = FIELD_HEIGHT_M / GRID_ROWS
+WAYPOINTS_PER_LOOP = GRID_COLUMNS * GRID_ROWS
 UNCERTAINTY_CASES = {
     120: "sensor_missing_soil_moisture",
     360: "data_conflict_vision_drought_soil_normal",
@@ -41,6 +48,29 @@ def simulate_image_label(
         return "unknown", random.uniform(0.28, 0.48)
 
     return "healthy", random.uniform(0.82, 0.97)
+
+
+def simulate_robot_pose(index: int) -> dict[str, str]:
+    waypoint = index % WAYPOINTS_PER_LOOP
+    grid_row = waypoint // GRID_COLUMNS
+    row_offset = waypoint % GRID_COLUMNS
+    is_forward_row = grid_row % 2 == 0
+    grid_col = row_offset if is_forward_row else GRID_COLUMNS - row_offset - 1
+
+    x = (grid_col + 0.5) * CELL_WIDTH_M + 1.5 * math.sin(index * 0.7)
+    y = (grid_row + 0.5) * CELL_HEIGHT_M + 1.0 * math.cos(index * 0.5)
+    x = clamp(x, 0, FIELD_WIDTH_M)
+    y = clamp(y, 0, FIELD_HEIGHT_M)
+    heading = 90.0 if is_forward_row else 270.0
+
+    return {
+        "robot_x_m": f"{x:.1f}",
+        "robot_y_m": f"{y:.1f}",
+        "robot_heading_deg": f"{heading:.0f}",
+        "region_id": f"R{grid_row + 1:02d}C{grid_col + 1:02d}",
+        "path_segment": f"row_{grid_row + 1}",
+        "patrol_loop": str(index // WAYPOINTS_PER_LOOP + 1),
+    }
 
 
 def generate_rows() -> list[dict[str, str]]:
@@ -112,6 +142,7 @@ def generate_rows() -> list[dict[str, str]]:
                 "image_status": image_status,
                 "vision_confidence": f"{vision_confidence:.2f}",
                 "uncertainty_case": uncertainty_case,
+                **simulate_robot_pose(index),
             }
         )
 
@@ -135,6 +166,12 @@ def main() -> None:
                 "image_status",
                 "vision_confidence",
                 "uncertainty_case",
+                "robot_x_m",
+                "robot_y_m",
+                "robot_heading_deg",
+                "region_id",
+                "path_segment",
+                "patrol_loop",
             ],
         )
         writer.writeheader()

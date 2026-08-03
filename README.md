@@ -230,6 +230,40 @@ belief_t = α × P_fused_t + (1 - α) × belief_{t-1}
 建议：优先让机器人复查该区域并重新采样；若低湿状态连续出现，触发灌溉提醒
 ```
 
+## 结果可视化
+
+已新增 `scripts/visualize_results.py`，用于把风险评估结果和实验对比结果转换为 SVG 图表。图表输出目录为 `figures/`。
+
+运行可视化：
+
+```bash
+python3 scripts/visualize_results.py
+```
+
+### 风险曲线
+
+该图展示 `risk_score` 随时间变化的趋势，并标出中风险和中高风险阈值。图中的竖向虚线表示人为插入的不确定性测试样本。
+
+![Risk curve](figures/risk_curve.svg)
+
+### 状态概率曲线
+
+该图展示平滑后的状态概率分布，包括健康、干旱、高温、病虫害、积水、低光照和传感器异常。它可以体现系统不是只做单点分类，而是在连续维护一个概率化环境状态。
+
+![State probability curves](figures/state_probability_curves.svg)
+
+### 不确定性曲线
+
+该图展示 `uncertainty_score` 随时间变化的趋势，用于观察缺失值、模态冲突、低置信度视觉结果和传感器异常如何影响系统决策可靠性。
+
+![Uncertainty curve](figures/uncertainty_curve.svg)
+
+### 融合方法对比图
+
+该图比较规则融合、固定权重概率融合和不确定性动态加权融合在风险识别、不确定性检测和安全阻止执行方面的表现。
+
+![Fusion method comparison](figures/fusion_method_comparison.svg)
+
 ## 实验评估指标
 
 已新增 `scripts/evaluate_fusion_methods.py`，用于比较 3 种融合方法：
@@ -256,6 +290,24 @@ belief_t = α × P_fused_t + (1 - α) × belief_{t-1}
 | `anomaly_detection_rate` | 异常值检测率 |
 | `safe_hold_rate_on_uncertain_risk` | 不确定中高风险场景下是否能阻止直接执行动作 |
 
+当前实验结果：
+
+| 方法 | 风险类别准确率 | 不确定性检测率 | 冲突检测率 | 异常值检测率 | 不确定风险安全阻止率 |
+| --- | --- | --- | --- | --- | --- |
+| `rule_fusion` | 0.977 | 0.000 | 0.000 | 1.000 | 0.076 |
+| `fixed_weighted_fusion` | 0.966 | 1.000 | 1.000 | 1.000 | 1.000 |
+| `uncertainty_weighted_fusion` | 0.935 | 1.000 | 1.000 | 1.000 | 1.000 |
+
+## 实验分析
+
+从风险类别准确率看，`rule_fusion` 的数值最高，达到 0.977。这说明在干净、规则明确的模拟样本中，简单规则可以很好地匹配人工设定的风险标签。但是它的不确定性检测率和冲突检测率都是 0.000，说明它只能判断“像不像某类风险”，无法判断“当前判断是否可靠”。对于野外机器人或辅助机器人来说，这种方法存在安全缺陷：当传感器缺失、图像与土壤湿度冲突、视觉置信度过低时，系统仍可能给出看似确定的动作建议。
+
+`fixed_weighted_fusion` 将传感器和视觉结果都转换为概率分布，并加入不确定性检测，因此在不确定性检测、冲突检测、异常值检测和安全阻止执行方面都达到 1.000。相比规则融合，它更适合处理多模态输入不完整或互相矛盾的情况。但它的问题是模态权重基本固定，不能充分表达“某个时刻哪一种模态更可信”。例如视觉置信度很低时，它虽然能检测不确定性，但融合逻辑本身仍缺少更细粒度的动态可靠性调整。
+
+`uncertainty_weighted_fusion` 的风险类别准确率为 0.935，略低于前两种方法，但它保留了 1.000 的不确定性检测率、冲突检测率、异常值检测率和安全阻止率。这个结果符合安全具身自主系统的设计目标：系统不追求在每个时刻都做出最激进的单点分类，而是优先维护可靠状态估计，并在不确定中高风险场景中选择复查、重新采样或暂缓执行。换句话说，它牺牲了一部分静态标签匹配准确率，换来了更强的安全性、鲁棒性和可解释性。
+
+因此，本项目的核心技术价值不在于单纯提高分类准确率，而在于构建了一个面向噪声环境的决策框架：多模态输入先被转换为状态概率，随后根据模态可靠性动态调整权重，再通过时间序列平滑维护连续状态信念，最后由安全决策层决定是否执行动作。这更符合农业/野外巡检机器人在真实环境中的需求。
+
 运行评估：
 
 ```bash
@@ -274,4 +326,5 @@ python3 scripts/analyze_crop_risk.py
 python3 scripts/generate_mock_environment_data.py
 python3 scripts/analyze_crop_risk.py
 python3 scripts/evaluate_fusion_methods.py
+python3 scripts/visualize_results.py
 ```

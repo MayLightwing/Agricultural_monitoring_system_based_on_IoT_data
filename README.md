@@ -16,6 +16,22 @@ The pipeline models the crop state as a probability distribution over healthy, d
 
 The evaluation compares a rule baseline, fixed-weight probabilistic fusion, and uncertainty-weighted fusion. Its labels are derived from the synthetic-data rules, so the reported metrics demonstrate internal behavior rather than real-world predictive performance.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Synthetic data generation] --> B[Sensor and mock-vision assessment]
+    B --> C[Dynamic reliability fusion]
+    C --> D[Temporal trend analysis and smoothing]
+    D --> E[Uncertainty assessment]
+    E --> F[Risk-aware safety decision]
+    F --> G[Risk-assessment CSV]
+    B --> H[Fusion-method evaluation]
+    H --> I[Comparison CSV]
+    G --> J[SVG visualizations]
+    I --> J
+```
+
 ## Quick start
 
 The project uses only the Python standard library. From the repository root:
@@ -39,7 +55,31 @@ These deterministic commands regenerate the tracked CSV outputs and SVG figures.
 | `data/fusion_method_predictions.csv` | Per-observation predictions for each method |
 | `figures/*.svg` | Risk, uncertainty, state-probability, and method-comparison visualizations |
 
-On the included synthetic scenario, uncertainty-weighted fusion detects the introduced uncertainty, conflict, and anomaly cases and holds direct action for uncertain medium/high-risk cases. These figures are illustrative results from the simulation, not field-performance claims.
+## Evidence and results
+
+The tracked synthetic dataset contains 1,000 hourly observations from `2026-08-03 00:00` to `2026-09-13 15:00`. The evaluation produces 3,000 predictions: each observation is scored by three methods. The table reproduces the values in [`data/fusion_method_comparison.csv`](data/fusion_method_comparison.csv); risk-class and binary-risk accuracy are agreement with simulation-derived reference labels, not field-validation metrics.
+
+| Method | Risk-class accuracy | Binary-risk accuracy | Uncertainty detection | Conflict detection | Anomaly detection | Safe hold on uncertain risk |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Rule fusion | 0.977 | 0.980 | 0.000 | 0.000 | 1.000 | 0.076 |
+| Fixed-weight fusion | 0.966 | 0.968 | 1.000 | 1.000 | 1.000 | 1.000 |
+| Uncertainty-weighted fusion | 0.935 | 0.947 | 1.000 | 1.000 | 1.000 | 1.000 |
+
+![Risk score over time](figures/risk_curve.svg)
+
+*Risk score over the 1,000 synthetic observations, with medium- and medium-high-risk thresholds and markers for inserted uncertainty cases.*
+
+![State probabilities over time](figures/state_probability_curves.svg)
+
+*Temporally smoothed probabilities for the modeled crop and sensor states, showing how the dominant state changes over the simulated sequence.*
+
+![Uncertainty score over time](figures/uncertainty_curve.svg)
+
+*Uncertainty score over the synthetic sequence, with thresholds and markers for the four deliberately introduced uncertainty scenarios.*
+
+![Fusion-method comparison](figures/fusion_method_comparison.svg)
+
+*Comparison of the three implemented fusion methods using the simulation-derived evaluation metrics reported above.*
 
 ## Repository layout
 

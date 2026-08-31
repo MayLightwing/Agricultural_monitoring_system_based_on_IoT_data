@@ -11,11 +11,14 @@ COMPARISON_PATH = PROJECT_ROOT / "data" / "fusion_method_comparison.csv"
 FIGURE_DIR = PROJECT_ROOT / "figures"
 
 CHART_WIDTH = 1200
-CHART_HEIGHT = 520
+CHART_HEIGHT = 640
 MARGIN_LEFT = 82
 MARGIN_RIGHT = 36
-MARGIN_TOP = 62
-MARGIN_BOTTOM = 76
+MARGIN_BOTTOM = 86
+TITLE_Y = 34
+LEGEND_TOP = 68
+LEGEND_LINE_HEIGHT = 24
+LEGEND_PLOT_GAP = 32
 
 STATE_COLORS = {
     "p_healthy": "#2e7d32",
@@ -25,6 +28,12 @@ STATE_COLORS = {
     "p_waterlogging": "#1565c0",
     "p_low_light": "#f9a825",
     "p_sensor_anomaly": "#455a64",
+}
+MARKER_LABELS = {
+    "sensor_missing_soil_moisture": "missing soil moisture",
+    "data_conflict_vision_drought_soil_normal": "vision/soil conflict",
+    "low_vision_confidence": "low vision confidence",
+    "noisy_temperature_spike": "temperature spike",
 }
 
 
@@ -40,24 +49,29 @@ def scale_x(index: int, count: int) -> float:
     return MARGIN_LEFT + index / (count - 1) * plot_width
 
 
-def scale_y(value: float, minimum: float, maximum: float) -> float:
-    plot_height = CHART_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM
+def scale_y(value: float, minimum: float, maximum: float, plot_top: float) -> float:
+    plot_height = CHART_HEIGHT - plot_top - MARGIN_BOTTOM
     normalized = (value - minimum) / (maximum - minimum)
-    return MARGIN_TOP + (1 - normalized) * plot_height
+    return plot_top + (1 - normalized) * plot_height
 
 
-def make_polyline(values: list[float], minimum: float, maximum: float) -> str:
+def make_polyline(
+    values: list[float],
+    minimum: float,
+    maximum: float,
+    plot_top: float,
+) -> str:
     return " ".join(
-        f"{scale_x(index, len(values)):.1f},{scale_y(value, minimum, maximum):.1f}"
+        f"{scale_x(index, len(values)):.1f},{scale_y(value, minimum, maximum, plot_top):.1f}"
         for index, value in enumerate(values)
     )
 
 
-def grid_lines(minimum: float, maximum: float, step: float) -> str:
+def grid_lines(minimum: float, maximum: float, step: float, plot_top: float) -> str:
     elements: list[str] = []
     value = minimum
     while value <= maximum + 1e-9:
-        y = scale_y(value, minimum, maximum)
+        y = scale_y(value, minimum, maximum, plot_top)
         elements.append(
             f'<line x1="{MARGIN_LEFT}" y1="{y:.1f}" x2="{CHART_WIDTH - MARGIN_RIGHT}" '
             f'y2="{y:.1f}" stroke="#e0e0e0" stroke-width="1" />'
@@ -70,27 +84,52 @@ def grid_lines(minimum: float, maximum: float, step: float) -> str:
     return "\n".join(elements)
 
 
-def marker_lines(rows: list[dict[str, str]], minimum: float, maximum: float) -> str:
+def marker_lines(rows: list[dict[str, str]], plot_top: float) -> str:
     markers: list[str] = []
     for index, row in enumerate(rows):
         case = row.get("uncertainty_case", "normal")
         if case == "normal":
             continue
         x = scale_x(index, len(rows))
+        label = MARKER_LABELS.get(case, case.replace("_", " "))
         markers.append(
-            f'<line x1="{x:.1f}" y1="{MARGIN_TOP}" x2="{x:.1f}" '
+            f'<line x1="{x:.1f}" y1="{plot_top:.1f}" x2="{x:.1f}" '
             f'y2="{CHART_HEIGHT - MARGIN_BOTTOM}" stroke="#616161" '
             f'stroke-dasharray="5 5" stroke-width="1.2" />'
         )
         markers.append(
-            f'<text x="{x + 5:.1f}" y="{scale_y(maximum, minimum, maximum) + 14:.1f}" '
+            f'<text x="{x + 5:.1f}" y="{plot_top + 20:.1f}" '
             f'font-size="11" fill="#424242" transform="rotate(30 {x + 5:.1f} '
-            f'{scale_y(maximum, minimum, maximum) + 14:.1f})">{escape(case)}</text>'
+            f'{plot_top + 20:.1f})">{escape(label)}</text>'
         )
     return "\n".join(markers)
 
 
-def legend(items: list[tuple[str, str]], start_x: int = 92, start_y: int = 28) -> str:
+def legend_row_count(items: list[tuple[str, str]], start_x: int = 92) -> int:
+    x = start_x
+    rows = 1
+    for label, _ in items:
+        x += max(110, len(label) * 8 + 44)
+        if x > CHART_WIDTH - 180:
+            x = start_x
+            rows += 1
+    return rows
+
+
+def plot_top_for_legend(items: list[tuple[str, str]]) -> float:
+    return (
+        LEGEND_TOP
+        + (legend_row_count(items) - 1) * LEGEND_LINE_HEIGHT
+        + 16
+        + LEGEND_PLOT_GAP
+    )
+
+
+def legend(
+    items: list[tuple[str, str]],
+    start_x: int = 92,
+    start_y: int = LEGEND_TOP,
+) -> str:
     elements: list[str] = []
     x = start_x
     y = start_y
@@ -123,17 +162,20 @@ def line_chart(
     start_time = rows[0]["timestamp"]
     end_time = rows[-1]["timestamp"]
     threshold_lines = threshold_lines or []
+    legend_items = [(label, color) for label, _, color in series]
+    plot_top = plot_top_for_legend(legend_items)
+    plot_height = CHART_HEIGHT - plot_top - MARGIN_BOTTOM
 
     polylines = []
     for label, values, color in series:
         polylines.append(
             f'<polyline fill="none" stroke="{color}" stroke-width="2.2" '
-            f'points="{make_polyline(values, minimum, maximum)}" />'
+            f'points="{make_polyline(values, minimum, maximum, plot_top)}" />'
         )
 
     thresholds = []
     for value, label, color in threshold_lines:
-        y = scale_y(value, minimum, maximum)
+        y = scale_y(value, minimum, maximum, plot_top)
         thresholds.append(
             f'<line x1="{MARGIN_LEFT}" y1="{y:.1f}" x2="{CHART_WIDTH - MARGIN_RIGHT}" '
             f'y2="{y:.1f}" stroke="{color}" stroke-dasharray="6 4" stroke-width="1.3" />'
@@ -145,17 +187,17 @@ def line_chart(
 
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{CHART_WIDTH}" height="{CHART_HEIGHT}" viewBox="0 0 {CHART_WIDTH} {CHART_HEIGHT}">
 <rect width="100%" height="100%" fill="#ffffff" />
-<text x="{CHART_WIDTH / 2:.1f}" y="24" text-anchor="middle" font-size="20" font-weight="700" fill="#222">{escape(title)}</text>
-{legend([(label, color) for label, _, color in series])}
-<rect x="{MARGIN_LEFT}" y="{MARGIN_TOP}" width="{CHART_WIDTH - MARGIN_LEFT - MARGIN_RIGHT}" height="{CHART_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM}" fill="#fafafa" stroke="#bdbdbd" />
-{grid_lines(minimum, maximum, step)}
-{marker_lines(rows, minimum, maximum)}
+    <text x="{CHART_WIDTH / 2:.1f}" y="{TITLE_Y}" text-anchor="middle" font-size="20" font-weight="700" fill="#222">{escape(title)}</text>
+    {legend(legend_items)}
+    <rect x="{MARGIN_LEFT}" y="{plot_top:.1f}" width="{CHART_WIDTH - MARGIN_LEFT - MARGIN_RIGHT}" height="{plot_height:.1f}" fill="#fafafa" stroke="#bdbdbd" />
+    {grid_lines(minimum, maximum, step, plot_top)}
+    {marker_lines(rows, plot_top)}
 {''.join(thresholds)}
 {''.join(polylines)}
-<text x="{MARGIN_LEFT}" y="{CHART_HEIGHT - 34}" font-size="12" fill="#555">{escape(start_time)}</text>
-<text x="{CHART_WIDTH - MARGIN_RIGHT}" y="{CHART_HEIGHT - 34}" text-anchor="end" font-size="12" fill="#555">{escape(end_time)}</text>
-<text x="{CHART_WIDTH / 2:.1f}" y="{CHART_HEIGHT - 14}" text-anchor="middle" font-size="13" fill="#555">time</text>
-<text x="22" y="{CHART_HEIGHT / 2:.1f}" text-anchor="middle" font-size="13" fill="#555" transform="rotate(-90 22 {CHART_HEIGHT / 2:.1f})">{escape(y_label)}</text>
+    <text x="{MARGIN_LEFT}" y="{CHART_HEIGHT - 42}" font-size="12" fill="#555">{escape(start_time)}</text>
+    <text x="{CHART_WIDTH - MARGIN_RIGHT}" y="{CHART_HEIGHT - 42}" text-anchor="end" font-size="12" fill="#555">{escape(end_time)}</text>
+    <text x="{CHART_WIDTH / 2:.1f}" y="{CHART_HEIGHT - 18}" text-anchor="middle" font-size="13" fill="#555">time</text>
+    <text x="22" y="{plot_top + plot_height / 2:.1f}" text-anchor="middle" font-size="13" fill="#555" transform="rotate(-90 22 {plot_top + plot_height / 2:.1f})">{escape(y_label)}</text>
 </svg>
 """
     output_path.write_text(svg, encoding="utf-8")
@@ -168,8 +210,10 @@ def bar_chart(rows: list[dict[str, str]], output_path: Path) -> None:
         ("safe_hold_rate_on_uncertain_risk", "#d81b60"),
     ]
     methods = [row["method"] for row in rows]
+    legend_items = [(metric, color) for metric, color in metrics]
+    plot_top = plot_top_for_legend(legend_items)
     plot_width = CHART_WIDTH - MARGIN_LEFT - MARGIN_RIGHT
-    plot_height = CHART_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM
+    plot_height = CHART_HEIGHT - plot_top - MARGIN_BOTTOM
     group_width = plot_width / len(methods)
     bar_width = group_width / (len(metrics) + 1)
     elements: list[str] = []
@@ -180,7 +224,7 @@ def bar_chart(rows: list[dict[str, str]], output_path: Path) -> None:
             value = float(row[metric])
             height = value * plot_height
             x = group_x + (metric_index + 0.5) * bar_width
-            y = MARGIN_TOP + plot_height - height
+            y = plot_top + plot_height - height
             elements.append(
                 f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_width * 0.8:.1f}" height="{height:.1f}" '
                 f'fill="{color}" rx="3" />'
@@ -190,18 +234,18 @@ def bar_chart(rows: list[dict[str, str]], output_path: Path) -> None:
                 f'font-size="12" fill="#333">{value:.3f}</text>'
             )
         elements.append(
-            f'<text x="{group_x + group_width / 2:.1f}" y="{CHART_HEIGHT - 38}" '
+            f'<text x="{group_x + group_width / 2:.1f}" y="{CHART_HEIGHT - 46}" '
             f'text-anchor="middle" font-size="12" fill="#333">{escape(row["method"])}</text>'
         )
 
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{CHART_WIDTH}" height="{CHART_HEIGHT}" viewBox="0 0 {CHART_WIDTH} {CHART_HEIGHT}">
 <rect width="100%" height="100%" fill="#ffffff" />
-<text x="{CHART_WIDTH / 2:.1f}" y="24" text-anchor="middle" font-size="20" font-weight="700" fill="#222">Fusion Method Comparison</text>
-{legend([(metric, color) for metric, color in metrics])}
-<rect x="{MARGIN_LEFT}" y="{MARGIN_TOP}" width="{plot_width}" height="{plot_height}" fill="#fafafa" stroke="#bdbdbd" />
-{grid_lines(0, 1, 0.2)}
+    <text x="{CHART_WIDTH / 2:.1f}" y="{TITLE_Y}" text-anchor="middle" font-size="20" font-weight="700" fill="#222">Fusion Method Comparison</text>
+    {legend(legend_items)}
+    <rect x="{MARGIN_LEFT}" y="{plot_top:.1f}" width="{plot_width}" height="{plot_height:.1f}" fill="#fafafa" stroke="#bdbdbd" />
+    {grid_lines(0, 1, 0.2, plot_top)}
 {''.join(elements)}
-<text x="22" y="{CHART_HEIGHT / 2:.1f}" text-anchor="middle" font-size="13" fill="#555" transform="rotate(-90 22 {CHART_HEIGHT / 2:.1f})">score</text>
+    <text x="22" y="{plot_top + plot_height / 2:.1f}" text-anchor="middle" font-size="13" fill="#555" transform="rotate(-90 22 {plot_top + plot_height / 2:.1f})">score</text>
 </svg>
 """
     output_path.write_text(svg, encoding="utf-8")

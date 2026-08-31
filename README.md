@@ -57,7 +57,7 @@ These deterministic commands regenerate the tracked CSV outputs and SVG figures.
 
 ## Evidence and results
 
-The tracked synthetic dataset contains 1,000 hourly observations from `2026-08-03 00:00` to `2026-09-13 15:00`. The evaluation produces 3,000 predictions: each observation is scored by three methods. The table reproduces the values in [`data/fusion_method_comparison.csv`](data/fusion_method_comparison.csv); risk-class and binary-risk accuracy are agreement with simulation-derived reference labels, not field-validation metrics.
+The tracked synthetic dataset contains 1,000 hourly observations from `2023-12-01 00:00` to `2024-01-11 15:00`. These are simulation timestamps selected for the synthetic evaluation sequence within the project period, not evidence of real data collection or field deployment in 2023-2024. The evaluation produces 3,000 predictions: each observation is scored by three methods. The table reproduces the values in [`data/fusion_method_comparison.csv`](data/fusion_method_comparison.csv); risk-class and binary-risk accuracy are agreement with simulation-derived reference labels, not field-validation metrics.
 
 | Method | Risk-class accuracy | Binary-risk accuracy | Uncertainty detection | Conflict detection | Anomaly detection | Safe hold on uncertain risk |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |

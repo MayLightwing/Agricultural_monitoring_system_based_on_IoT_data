@@ -9,7 +9,7 @@ from pathlib import Path
 
 OUTPUT_PATH = Path(__file__).resolve().parents[1] / "data" / "mock_environment_data.csv"
 RECORD_COUNT = 1000
-START_TIME = datetime(2026, 8, 3, 0, 0)
+START_TIME = datetime(2023, 12, 1, 0, 0)
 RANDOM_SEED = 20260803
 UNCERTAINTY_CASES = {
     120: "sensor_missing_soil_moisture",
@@ -136,6 +136,7 @@ def main() -> None:
                 "vision_confidence",
                 "uncertainty_case",
             ],
+            lineterminator="\n",
         )
         writer.writeheader()
         writer.writerows(rows)

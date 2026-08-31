@@ -823,6 +823,7 @@ def write_results(results: list[RiskAssessment]) -> None:
                 "recommendation",
                 "uncertainty_case",
             ],
+            lineterminator="\n",
         )
         writer.writeheader()
         for result in results:

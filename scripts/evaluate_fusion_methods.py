@@ -318,6 +318,7 @@ def write_predictions(predictions: list[MethodPrediction]) -> None:
                 "action_permission",
                 "safety_action",
             ],
+            lineterminator="\n",
         )
         writer.writeheader()
         for prediction in predictions:
@@ -356,6 +357,7 @@ def write_summary(rows: list[dict[str, str]]) -> None:
                 "anomaly_detection_rate",
                 "safe_hold_rate_on_uncertain_risk",
             ],
+            lineterminator="\n",
         )
         writer.writeheader()
         writer.writerows(rows)

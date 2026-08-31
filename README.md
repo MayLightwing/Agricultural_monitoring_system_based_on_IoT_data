@@ -1,40 +1,27 @@
 # Uncertainty-Aware Multimodal Crop Monitoring
 
-A simulation-based prototype for crop-risk monitoring under uncertain environmental and visual observations. The project demonstrates how sensor readings and mock vision outputs can be fused into probabilistic crop-state estimates, then converted into risk-aware recommendations that defer action when evidence is unreliable or contradictory.
+This research software prototype studies crop-risk decision support when environmental sensing and visual observations are incomplete, uncertain, or inconsistent. It is a simulation-only implementation: inputs are deterministic synthetic sensor records and mock vision labels, and outputs are risk estimates and conservative action recommendations. The repository contains no real IoT stream, field imagery, robot controller, or field-validation result.
 
-This repository uses **synthetic environmental data** and **mock vision labels** only. It is not an IoT deployment, does not include field data or real imagery, and has not been validated on agricultural hardware or in field conditions.
+## Research question
+
+In a field-robotics monitoring workflow, how should sensor reliability, disagreement between sensing modalities, and temporal context change the decision to execute an intervention, recheck an observation, resample, or continue monitoring rather than force a single classification?
 
 ## Method
 
-The pipeline models the crop state as a probability distribution over healthy, drought, heat, pest, waterlogging, low-light, and sensor-anomaly conditions.
-
-1. Generate deterministic hourly synthetic data for environmental variables and mock visual observations.
-2. Validate values, identify missing or anomalous sensor readings, and estimate sensor- and vision-specific state probabilities.
-3. Adjust modality weights for missing values, anomalies, low visual confidence, and cross-modal conflicts.
-4. Fuse and temporally smooth the state probabilities with a six-hour trend window and exponential moving average.
-5. Calculate uncertainty and return a conservative recommendation such as observing, resampling, or rechecking before an intervention.
-
-The evaluation compares a rule baseline, fixed-weight probabilistic fusion, and uncertainty-weighted fusion. Its labels are derived from the synthetic-data rules, so the reported metrics demonstrate internal behavior rather than real-world predictive performance.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    A[Synthetic data generation] --> B[Sensor and mock-vision assessment]
-    B --> C[Dynamic reliability fusion]
-    C --> D[Temporal trend analysis and smoothing]
-    D --> E[Uncertainty assessment]
-    E --> F[Risk-aware safety decision]
-    F --> G[Risk-assessment CSV]
-    B --> H[Fusion-method evaluation]
-    H --> I[Comparison CSV]
-    G --> J[SVG visualizations]
-    I --> J
+```text
+synthetic hourly input
+  -> sensor and mock-vision estimators
+  -> reliability-weighted probability fusion
+  -> temporal trend analysis and EMA smoothing
+  -> risk and uncertainty assessment
+  -> safety action: execute, recheck, resample, or monitor
 ```
 
-## Quick start
+The implementation models probabilities for healthy, drought, heat, pest, waterlogging, low-light, and sensor-anomaly states. Missing values, out-of-range readings, low vision confidence, and sensor/vision conflicts reduce modality reliability. A six-hour trend window and exponential moving average provide temporal context before a safety policy selects an action.
 
-The project uses only the Python standard library. From the repository root:
+## Reproduce
+
+The project uses only the Python standard library.
 
 ```bash
 python3 scripts/generate_mock_environment_data.py
@@ -43,23 +30,20 @@ python3 scripts/evaluate_fusion_methods.py
 python3 scripts/visualize_results.py
 ```
 
-These deterministic commands regenerate the tracked CSV outputs and SVG figures.
+The commands regenerate the tracked CSV outputs and SVG figures.
 
-## Outputs
+```text
+.
+├── scripts/  # Data generation, risk analysis, evaluation, and SVG rendering
+├── data/     # Synthetic inputs and reproducible CSV outputs
+└── figures/  # Generated SVG evidence
+```
 
-| Path | Description |
-| --- | --- |
-| `data/mock_environment_data.csv` | 1,000 deterministic hourly synthetic observations |
-| `data/risk_assessment_results.csv` | Fused state probabilities, uncertainty, safety policy, and recommendation per observation |
-| `data/fusion_method_comparison.csv` | Aggregate comparison of the three fusion methods |
-| `data/fusion_method_predictions.csv` | Per-observation predictions for each method |
-| `figures/*.svg` | Risk, uncertainty, state-probability, and method-comparison visualizations |
+## Evidence
 
-## Evidence and results
+[`data/mock_environment_data.csv`](data/mock_environment_data.csv) contains 1,000 hourly synthetic observations from `2023-12-01 00:00` to `2024-01-11 15:00`; these timestamps locate the simulation within the project period and are not evidence of real collection or deployment. Evaluation produces 3,000 method predictions. The values below are reproduced from [`data/fusion_method_comparison.csv`](data/fusion_method_comparison.csv). Agreement metrics use simulation-derived reference labels and are not field-performance estimates.
 
-The tracked synthetic dataset contains 1,000 hourly observations from `2023-12-01 00:00` to `2024-01-11 15:00`. These are simulation timestamps selected for the synthetic evaluation sequence within the project period, not evidence of real data collection or field deployment in 2023-2024. The evaluation produces 3,000 predictions: each observation is scored by three methods. The table reproduces the values in [`data/fusion_method_comparison.csv`](data/fusion_method_comparison.csv); risk-class and binary-risk accuracy are agreement with simulation-derived reference labels, not field-validation metrics.
-
-| Method | Risk-class accuracy | Binary-risk accuracy | Uncertainty detection | Conflict detection | Anomaly detection | Safe hold on uncertain risk |
+| Method | Risk-class agreement | Binary-risk agreement | Uncertainty | Conflict | Anomaly | Safe hold |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Rule fusion | 0.977 | 0.980 | 0.000 | 0.000 | 1.000 | 0.076 |
 | Fixed-weight fusion | 0.966 | 0.968 | 1.000 | 1.000 | 1.000 | 1.000 |
@@ -67,38 +51,24 @@ The tracked synthetic dataset contains 1,000 hourly observations from `2023-12-0
 
 ![Risk score over time](figures/risk_curve.svg)
 
-*Risk score over the 1,000 synthetic observations, with medium- and medium-high-risk thresholds and markers for inserted uncertainty cases.*
+*Risk score across the synthetic sequence, with decision thresholds and introduced uncertainty cases.*
 
 ![State probabilities over time](figures/state_probability_curves.svg)
 
-*Temporally smoothed probabilities for the modeled crop and sensor states, showing how the dominant state changes over the simulated sequence.*
+*Smoothed probabilities for the modeled crop and sensor states.*
 
 ![Uncertainty score over time](figures/uncertainty_curve.svg)
 
-*Uncertainty score over the synthetic sequence, with thresholds and markers for the four deliberately introduced uncertainty scenarios.*
+*Uncertainty score across the synthetic sequence, with the introduced uncertainty cases marked.*
 
 ![Fusion-method comparison](figures/fusion_method_comparison.svg)
 
-*Comparison of the three implemented fusion methods using the simulation-derived evaluation metrics reported above.*
+*Comparison of the three implemented methods on the simulation-derived evaluation metrics.*
 
-## Repository layout
+## Limitations and next steps
 
-```text
-.
-├── data/       # Synthetic input and reproducible evaluation outputs
-├── figures/    # SVG visualizations generated from the outputs
-├── scripts/    # Standard-library Python pipeline
-└── README.md
-```
+- The visual labels, sensor readings, reference labels, thresholds, and action policy are simulated; they are not calibrated with field observations.
+- The temporal model is a lightweight trend heuristic plus exponential smoothing, not a validated state estimator.
+- The action output is decision support only and does not control an agricultural or mobile robot.
 
-## Limitations
-
-- The environmental values, visual labels, and evaluation labels are simulated.
-- `image_status` and `vision_confidence` stand in for a vision model; no model training or images are included.
-- Fusion weights, thresholds, and safety policies are hand-designed rather than calibrated from field data.
-- Temporal smoothing is a lightweight heuristic, not a validated Bayesian state estimator.
-- Recommendations are software outputs only; the project does not control irrigation, robots, or other physical systems.
-
-## Future extensions
-
-Useful next steps include replacing mock inputs with documented public or field datasets, calibrating uncertainty and thresholds against expert labels, evaluating with learned visual models, and connecting the decision layer to a separately validated operational workflow.
+Next work should evaluate the policy with documented sensor and perception data, propagate perception and localization confidence into target selection, and test safety margins and re-observation policies on a field-robot platform.
